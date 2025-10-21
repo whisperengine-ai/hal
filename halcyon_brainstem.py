@@ -9,7 +9,6 @@ import os
 import requests
 from llama_index.core import Settings
 
-
 # Prefer Attention if available; otherwise fall back to Hippocampus
 try:
     from attention import Attention as Hippocampus
@@ -177,12 +176,12 @@ class Thalamus:
         print(f"\n--- TURN {turn_id} INITIATED ---")
         print(f"[Thalamus] user_query={user_query!r}")
 
-        # Phase 1: Emotional state & reflection
+        # === Phase 1: Emotional state & reflection ===
         state, reflection = self.cortex.feel_and_reflect(user_query, turn_id, timestamp)
         print(f"[STATE DETECTED] {state}")
         print(f"[REFLECTION] {reflection}")
 
-        # Stream raw reflection immediately to UI (pre-memory)
+        # Stream raw reflection to UI
         try:
             requests.post("http://127.0.0.1:5000/api/reflection_raw", json={
                 "turn_id": turn_id,
@@ -193,13 +192,13 @@ class Thalamus:
         except Exception as e:
             print(f"[Thalamus] Could not emit pre-memory reflection: {e}")
 
-        # Phase 2: Memory recall
+        # === Phase 2: Memory recall ===
         print("[Thalamus] Recalling memories...")
         recent_turns = self.hippocampus.get_recent_turns()
         memories = self.hippocampus.recall_with_context(user_query)
         print(f"[Thalamus] Recall returned {len(memories)} items")
 
-        # Phase 3: Generate response
+        # === Phase 3: Generate response ===
         print("[Thalamus] Generating response...")
         response_text = self.cortex.respond(
             user_query=user_query,
@@ -209,11 +208,9 @@ class Thalamus:
             memories=memories
         )
 
-        # Update narrative and clear recall window
+        # === Phase 4: Memory update and commit ===
         self.hippocampus.update_narrative(user_query, reflection, response_text, memories)
         self.hippocampus.clear_recall_window()
-
-        # Phase 4: Save / delayed commit
         print("[Thalamus] Saving memory...")
         self.hippocampus.sustain_context({
             "turn_id": turn_id,
@@ -231,13 +228,26 @@ class Thalamus:
             metadata={"turn_id": turn_id, "task_id": task_id}
         )
 
+        # === Phase 5: Emit to Attention Stream ===
+        try:
+            # Late import prevents circular dependency at module load
+            import importlib
+            web_server = importlib.import_module("halcyon_web_server")
+            if hasattr(web_server, "emit_attention"):
+                web_server.emit_attention(turn_id, reflection, response_text)
+            else:
+                print("[Thalamus] emit_attention not found in halcyon_web_server")
+        except Exception as e:
+            print(f"[Thalamus] Could not emit attention window: {e}")
+
         print(f"\n🪞 RESPONSE:\n{response_text}\n")
         print(f"--- TURN {turn_id} COMPLETE ---")
         return response_text
-    
+
+
     def get_attention_window(self):
-        # Example: return last N turns as dicts
         return getattr(self, "recent_turns", [])
+
 
 
 

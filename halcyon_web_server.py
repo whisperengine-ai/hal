@@ -81,6 +81,36 @@ def stream_reflections():
 
     return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
 
+# ============================================================
+# 🩸 Attention Layer Stream (SSE)
+# ============================================================
+from flask import Response, stream_with_context
+import queue
+
+attention_stream = queue.Queue()
+
+@app.route("/api/attention_feed")
+def api_attention_feed():
+    """Server-Sent Events feed for attention window (final reflection + response)."""
+    def stream():
+        while True:
+            payload = attention_stream.get()
+            yield f"data: {json.dumps(payload)}\n\n"
+    return Response(stream_with_context(stream()), mimetype="text/event-stream")
+
+def emit_attention(turn_id: int, final_reflection: str, response: str):
+    """Called by Thalamus after final reflection + response."""
+    payload = {
+        "turn_id": turn_id,
+        "type": "attention_update",
+        "final_reflection": final_reflection,
+        "response": response,
+        "timestamp": datetime.datetime.now().isoformat()
+    }
+    attention_stream.put(payload)
+    print(f"[API] Emitted attention update for turn {turn_id}")
+
+
 
 @app.route("/api/attention", methods=["GET"])
 def api_attention():
