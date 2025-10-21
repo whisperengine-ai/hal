@@ -128,51 +128,49 @@ class Hippocampus:
             self.recent_turns.pop(0)
 
     def delayed_commit(self, user_query, reflection, response, state_json, metadata):
-        # Rate-limit commits to avoid race conditions
-        if time.time() - self.last_commit_time < 3:
+        """Commit a dual-perspective memory entry, including keywords + emotions."""
+        import uuid, datetime, time
+        if time.time() - getattr(self, "last_commit_time", 0) < 3:
             time.sleep(1.5)
 
-        # === Build fused semantic document ===
         fused_text = (
             f"USER QUERY:\n{user_query.strip()}\n\n"
             f"INTERNAL MONOLOGUE:\n{reflection.strip()}\n\n"
             f"MODEL RESPONSE:\n{response.strip()}"
         )
 
-        # Embed combined representation
         embedding = self.cortex.embed(fused_text)
 
-        # Prepare timestamp once
-        ts = datetime.datetime.now().isoformat()
-
-        # Build emotion fields (top 3)
-        emo_meta = {}
-        emotions = (state_json or {}).get("emotions", []) if isinstance(state_json, dict) else []
-        for i, e in enumerate(emotions[:3], start=1):
-            if isinstance(e, dict):
-                emo_meta[f"emo_{i}_name"] = e.get("name")
-                emo_meta[f"emo_{i}_intensity"] = e.get("intensity")
-
-        # Assemble metadata
+        # === Extract top emotions + keywords ===
+        emotions = state_json.get("emotions", [])
+        keywords = state_json.get("keywords", [])
         meta = {
-            **(metadata or {}),
-            "timestamp": ts,
+            **metadata,
+            "timestamp": datetime.datetime.now().isoformat(),
             "memory_type": "dual_perspective",
             "reflection": reflection,
-            "summary": f"Fusion of user query + internal reflection @ {ts}",
-            **emo_meta,
+            "summary": f"Fusion of user query + reflection @ {metadata.get('turn_id')}",
         }
 
-        # Persist
+        # Add top-3 emotion tags
+        for i, e in enumerate(emotions[:3]):
+            meta[f"emo_{i+1}_name"] = e.get("name")
+            meta[f"emo_{i+1}_intensity"] = e.get("intensity")
+
+        # Add keyword tags (up to 10)
+        for i, kw in enumerate(keywords[:10]):
+            meta[f"keyword_{i+1}"] = kw
+
         self.coll.add(
             ids=[str(uuid.uuid4())],
             documents=[fused_text],
             embeddings=[embedding],
-            metadatas=[meta],
+            metadatas=[meta]
         )
 
         self.last_commit_time = time.time()
         print(f"[Hippo.encode] Saved dual-perspective memory with metadata: {meta}")
+
 
     def store_raw_reflection(self, turn_id, state, reflection):
         """Keep latest reflection for UI display or debugging."""

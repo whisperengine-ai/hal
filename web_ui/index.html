@@ -124,13 +124,15 @@ queryBox.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();s
 
 // --- Memory ---
 async function loadMemories(){
-  const res=await fetch("/api/memories");const data=await res.json();
+  const res=await fetch("/api/memories");
+  const data=await res.json();
   memoryOut.innerHTML=data.map(m=>`
   <div class="memory-card">
     <h3>🕓 ${m.timestamp}</h3>
     <p><b>Query:</b> ${m.query}</p>
     <p><b>Reflection:</b> ${m.reflection}</p>
     <pre>${JSON.stringify(m.state,null,2)}</pre>
+    ${m.keywords?.length ? `<p><b>Keywords:</b> ${m.keywords.join(', ')}</p>` : ''}
   </div>`).join("");
 }
 async function testRecall(){

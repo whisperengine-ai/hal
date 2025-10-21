@@ -9,6 +9,10 @@ from flask import jsonify
 from halcyon_brainstem import Cortex, Thalamus
 from hippocampus import Hippocampus
 
+from queue import Queue
+attention_stream = Queue()
+
+
 def state_from_meta(meta):
     """Extract emotions from metadata keys like emo_1_name/intensity."""
     if not meta:
@@ -82,21 +86,23 @@ def stream_reflections():
     return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
 
 # ============================================================
-# 🩸 Attention Layer Stream (SSE)
+# ATTENTION STREAMING
 # ============================================================
-from flask import Response, stream_with_context
-import queue
 
-attention_stream = queue.Queue()
+from flask import Response, stream_with_context
+import json, datetime, time
+from sse_bus import sse_streams, emit_sse
 
 @app.route("/api/attention_feed")
 def api_attention_feed():
-    """Server-Sent Events feed for attention window (final reflection + response)."""
+    """Server-Sent Events feed for the Attention window (final reflection + response)."""
     def stream():
         while True:
-            payload = attention_stream.get()
+            payload = sse_streams["attention"].get()
             yield f"data: {json.dumps(payload)}\n\n"
+            time.sleep(0.1)
     return Response(stream_with_context(stream()), mimetype="text/event-stream")
+
 
 def emit_attention(turn_id: int, final_reflection: str, response: str):
     """Called by Thalamus after final reflection + response."""
@@ -105,10 +111,11 @@ def emit_attention(turn_id: int, final_reflection: str, response: str):
         "type": "attention_update",
         "final_reflection": final_reflection,
         "response": response,
-        "timestamp": datetime.datetime.now().isoformat()
+        "timestamp": datetime.datetime.now().isoformat(),
     }
-    attention_stream.put(payload)
-    print(f"[API] Emitted attention update for turn {turn_id}")
+    emit_sse("attention", payload)
+    print(f"[SSE BUS] 🩸 Emitted attention update for turn {turn_id}")
+
 
 
 
@@ -146,30 +153,31 @@ def api_turn():
 
 @app.route("/api/memories", methods=["GET"])
 def api_memories():
-    """Return all stored memories as normalized objects for the UI."""
-    import json, re, traceback
-    import chromadb
+    """Return all stored memories, including emotion + keyword metadata."""
+    import json, re, traceback, chromadb
 
     def parse_doc(doc: str, meta: dict):
-        """Parse the stored document into fields (timestamp, query, reflection, state)."""
-        # Try JSON-formatted memory first
+        """Parse stored document into fields (timestamp, query, reflection, state, keywords)."""
         try:
             obj = json.loads(doc)
             ts = obj.get("timestamp") or meta.get("timestamp")
             query = obj.get("user_query", "")
             reflection = obj.get("reflection", "")
             state = obj.get("state") or state_from_meta(meta)
-            return ts, query, reflection, state
         except Exception:
-            pass
-        # Fallback for plain text format
-        ts = (meta or {}).get("timestamp", "")
-        q_match = re.search(r"User\s*Query:\s*(.+)", doc, re.IGNORECASE)
-        r_match = re.search(r"Reflection:\s*([\s\S]+)$", doc, re.IGNORECASE)
-        query = (q_match.group(1).strip() if q_match else "")
-        reflection = (r_match.group(1).strip() if r_match else "")
-        state = state_from_meta(meta)
-        return ts, query, reflection, state
+            ts = (meta or {}).get("timestamp", "")
+            q_match = re.search(r"USER\s*QUERY:\s*(.+)", doc, re.IGNORECASE)
+            r_match = re.search(r"INTERNAL\s*MONOLOGUE:\s*([\s\S]+?)MODEL\s*RESPONSE:", doc, re.IGNORECASE)
+            query = (q_match.group(1).strip() if q_match else "")
+            reflection = (r_match.group(1).strip() if r_match else "")
+            state = state_from_meta(meta)
+
+        # --- Extract keyword list from metadata ---
+        keywords = []
+        for k, v in meta.items():
+            if k.startswith("keyword_") and v:
+                keywords.append(v)
+        return ts, query, reflection, state, keywords
 
     try:
         client = chromadb.PersistentClient(path="./memory_journals/halcyon_persistent")
@@ -183,24 +191,26 @@ def api_memories():
         entries = []
         for id_, doc, meta in zip(ids, docs, metas):
             meta = meta or {}
-            ts, query, reflection, state = parse_doc(doc or "", meta or {})
+            ts, query, reflection, state, keywords = parse_doc(doc or "", meta or {})
             entries.append({
                 "id": id_,
                 "timestamp": ts or "",
                 "query": query,
                 "reflection": reflection,
                 "state": state or {"emotions": []},
+                "keywords": keywords,
                 "content": (doc or ""),
                 "meta": meta or {}
             })
 
-        # Sort newest-first by timestamp
+        # Sort newest first
         entries.sort(key=lambda e: e.get("timestamp") or "", reverse=True)
         return jsonify(entries)
 
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
 
 
 @app.route('/api/memory/inspect', methods=['GET'])
@@ -260,32 +270,37 @@ def inspect_memory():
 
 @app.route('/api/memory/test-recall', methods=['POST'])
 def test_recall():
-    """Test recall with a query and see what comes back."""
+    """Test memory recall and visualize retrieved entries."""
     try:
         query = request.json.get("query", "test")
-        results = hippocampus.recall(query)
-        
+
+        # Use recall_with_context instead of the old recall()
+        results = hippocampus.recall_with_context(query)
+
         retrieved_docs = []
         for node in results:
             try:
-                text = node.get_content()
-            except:
-                text = str(node)[:150]
+                text = node.get("text", None) or getattr(node, "text", None) or str(node)
+            except Exception:
+                text = str(node)[:200]
+
             retrieved_docs.append({
-                "text_preview": text[:150]
+                "text_preview": text[:250],
+                "weight": node.get("weight", 1.0) if isinstance(node, dict) else 1.0
             })
-        
-        return {
+
+        return jsonify({
             "query": query,
             "retrieved_count": len(results),
             "memories": retrieved_docs
-        }
+        })
+
     except Exception as e:
         import traceback
-        return {
+        return jsonify({
             "error": str(e),
             "traceback": traceback.format_exc()
-        }, 500
+        }), 500
 
 
 if __name__ == "__main__":
