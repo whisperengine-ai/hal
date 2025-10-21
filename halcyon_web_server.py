@@ -1,19 +1,32 @@
+# ============================================================
 # halcyon_web_server.py — Flask bridge for Halcyon Web Console 🧠
-from flask import Flask, request, jsonify, send_from_directory, Response, stream_with_context
+# ============================================================
+from flask import (
+    Flask, request, jsonify, send_from_directory,
+    Response, stream_with_context
+)
 from flask_cors import CORS
-import datetime, time, os, traceback
-import json, re, traceback
+import os
+import time
+import json
+import re
+import datetime
+import traceback
 import chromadb
-from flask import jsonify
 
+# Core runtime
+import halcyon_brainstem
+print(f"[DEBUG] halcyon_brainstem location: {halcyon_brainstem.__file__}")
 from halcyon_brainstem import Cortex, Thalamus
 from hippocampus import Hippocampus
 
-from queue import Queue
-attention_stream = Queue()
+# Unified SSE bus (monologue + attention)
+from sse_bus import sse_streams
 
-
-def state_from_meta(meta):
+# ------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------
+def state_from_meta(meta: dict):
     """Extract emotions from metadata keys like emo_1_name/intensity."""
     if not meta:
         return {"emotions": []}
@@ -28,48 +41,31 @@ def state_from_meta(meta):
                 emotions.append({"name": name, "intensity": 0.0})
     return {"emotions": emotions}
 
+# ------------------------------------------------------------
+# App bootstrap
+# ------------------------------------------------------------
 app = Flask(__name__, static_folder="web_ui", static_url_path="")
-CORS(app)  # Allow local browser requests
+CORS(app)  # local browser requests
 
-# --- Initialize runtime ---
 print("[Server] Initializing Halcyon core modules...")
 cortex = Cortex()
 hippocampus = Hippocampus(cortex)
 thalamus = Thalamus(cortex, hippocampus)
 print("[Server] Initialization complete.")
 
-@app.route("/api/test-attention")
-def api_test_attention():
-    from sse_bus import emit_sse
-    emit_sse("attention", {
-        "type": "attention_update",
-        "turn_id": 999,
-        "final_reflection": "Test reflection from /api/test-attention",
-        "response": "This is only a test.",
-        "timestamp": datetime.datetime.now().isoformat()
-    })
-    return jsonify({"status": "ok"})
-
-
+# ------------------------------------------------------------
+# Static UI
+# ------------------------------------------------------------
 @app.route("/")
 def index():
-    """Serve the frontend."""
     return send_from_directory("web_ui", "index.html")
 
-from flask import Flask, Response, stream_with_context
-import queue
-
-# global queue for streaming reflections
-reflection_stream = queue.Queue()
-
-
-from flask import Response, stream_with_context
-import json, time
-from sse_bus import sse_streams
-
+# ------------------------------------------------------------
+# SSE: Internal Monologue (pre-memory reflection)
+# ------------------------------------------------------------
 @app.route("/api/reflection_raw")
 def api_reflection_raw():
-    """Continuous event stream for internal monologue (SSE)."""
+    """Continuous SSE stream for internal monologue."""
     def stream():
         q = sse_streams["reflection"]
         while True:
@@ -77,34 +73,17 @@ def api_reflection_raw():
                 payload = q.get(timeout=1)
                 yield f"data: {json.dumps(payload)}\n\n"
             except Exception:
-                # keep-alive heartbeat
+                # heartbeat to keep the connection alive
                 yield ":\n\n"
                 time.sleep(1)
     return Response(stream_with_context(stream()), mimetype="text/event-stream")
 
-
-def emit_reflection(turn_id: int, state: dict, reflection: str):
-    """Emit a pre-memory reflection event to the reflection SSE stream."""
-    payload = {
-        "turn_id": turn_id,
-        "type": "pre_memory_reflection",
-        "pre_reflection_state": state,
-        "pre_reflection_text": reflection,
-        "timestamp": datetime.datetime.now().isoformat()
-    }
-    sse_streams["reflection"].put(payload)
-    print(f"[SSE BUS] Emitted reflection update for turn {turn_id}")
-
-# ============================================================
-# 🩸 Attention Layer Stream (SSE)
-# ============================================================
-from flask import Response, stream_with_context
-import json, time
-from sse_bus import sse_streams
-
+# ------------------------------------------------------------
+# SSE: Attention (final reflection + response)
+# ------------------------------------------------------------
 @app.route("/api/attention_feed")
 def api_attention_feed():
-    """Continuous event stream for attention data (SSE)."""
+    """Continuous SSE stream for attention (final reflection + response)."""
     def stream():
         q = sse_streams["attention"]
         while True:
@@ -112,68 +91,78 @@ def api_attention_feed():
                 payload = q.get(timeout=1)
                 yield f"data: {json.dumps(payload)}\n\n"
             except Exception:
-                # Keep connection alive
                 yield ":\n\n"
                 time.sleep(1)
     return Response(stream_with_context(stream()), mimetype="text/event-stream")
 
+# ------------------------------------------------------------
+# Manual test endpoints for SSE (handy for debugging UI)
+# ------------------------------------------------------------
+@app.get("/api/test-reflection")
+def api_test_reflection():
+    sse_streams["reflection"].put({
+        "type": "pre_memory_reflection",
+        "turn_id": 777,
+        "timestamp": datetime.datetime.now().isoformat(),
+        "pre_reflection_state": {"emotions": [{"name": "Curiosity", "intensity": 0.7}]},
+        "pre_reflection_text": "Test pre-memory reflection emitted from /api/test-reflection."
+    })
+    return jsonify({"status": "ok"})
 
-def emit_attention(turn_id: int, final_reflection: str, response: str):
-    """Called by Thalamus after final reflection + response."""
-    payload = {
-        "turn_id": turn_id,
+@app.get("/api/test-attention")
+def api_test_attention():
+    sse_streams["attention"].put({
         "type": "attention_update",
-        "final_reflection": final_reflection,
-        "response": response,
-        "timestamp": datetime.datetime.now().isoformat()
-    }
-    attention_stream.put(payload)
-    print(f"[API] Emitted attention update for turn {turn_id}")
+        "turn_id": 999,
+        "timestamp": datetime.datetime.now().isoformat(),
+        "final_reflection": "Test final reflection from /api/test-attention",
+        "response": "This is only a test."
+    })
+    return jsonify({"status": "ok"})
 
-
-
-@app.route("/api/attention", methods=["GET"])
-def api_attention():
+# ------------------------------------------------------------
+# Optional: Inspect current attention buffer (if implemented)
+# ------------------------------------------------------------
+@app.get("/api/attention")
+def api_attention_snapshot():
     """Return current working attention window (short-term context)."""
     try:
-        buffer = thalamus.get_attention_window()  # Implement this in Thalamus
+        buffer = thalamus.get_attention_window()  # Implement in Thalamus if you want
         return jsonify(buffer), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-
-
+# ------------------------------------------------------------
+# Chat turn
+# ------------------------------------------------------------
 @app.post("/api/turn")
 def api_turn():
-    """Handle chat turns."""
+    """Handle chat turns end-to-end."""
     try:
         data = request.get_json(force=True)
-        query = data.get("query", "").strip()
+        query = (data.get("query") or "").strip()
         if not query:
             return jsonify({"error": "Empty query"}), 400
 
         turn_id = int(time.time())
         task_id = f"WEB_UI_{turn_id}"
 
-        print(f"[API] Processing turn: {turn_id} :: {query[:50]}...")
+        print(f"[API] Processing turn: {turn_id} :: {query[:80]}...")
         response = thalamus.process_turn(query, turn_id, task_id)
 
         return jsonify({"response": response, "turn_id": turn_id})
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-    
-# ============================================================
-# MEMORY INSPECTION + TESTING
-# ============================================================
 
-@app.route("/api/memories", methods=["GET"])
+# ------------------------------------------------------------
+# Memory: fetch + inspect
+# ------------------------------------------------------------
+@app.get("/api/memories")
 def api_memories():
     """Return all stored memories, including emotion + keyword metadata."""
-    import json, re, traceback, chromadb
-
     def parse_doc(doc: str, meta: dict):
-        """Parse stored document into fields (timestamp, query, reflection, state, keywords)."""
+        # Try JSON doc first
         try:
             obj = json.loads(doc)
             ts = obj.get("timestamp") or meta.get("timestamp")
@@ -181,6 +170,7 @@ def api_memories():
             reflection = obj.get("reflection", "")
             state = obj.get("state") or state_from_meta(meta)
         except Exception:
+            # Fallback for fused/plain text
             ts = (meta or {}).get("timestamp", "")
             q_match = re.search(r"USER\s*QUERY:\s*(.+)", doc, re.IGNORECASE)
             r_match = re.search(r"INTERNAL\s*MONOLOGUE:\s*([\s\S]+?)MODEL\s*RESPONSE:", doc, re.IGNORECASE)
@@ -188,11 +178,8 @@ def api_memories():
             reflection = (r_match.group(1).strip() if r_match else "")
             state = state_from_meta(meta)
 
-        # --- Extract keyword list from metadata ---
-        keywords = []
-        for k, v in meta.items():
-            if k.startswith("keyword_") and v:
-                keywords.append(v)
+        # collect keyword_* entries from metadata
+        keywords = [v for k, v in (meta or {}).items() if k.startswith("keyword_") and v]
         return ts, query, reflection, state, keywords
 
     try:
@@ -206,7 +193,6 @@ def api_memories():
 
         entries = []
         for id_, doc, meta in zip(ids, docs, metas):
-            meta = meta or {}
             ts, query, reflection, state, keywords = parse_doc(doc or "", meta or {})
             entries.append({
                 "id": id_,
@@ -215,32 +201,29 @@ def api_memories():
                 "reflection": reflection,
                 "state": state or {"emotions": []},
                 "keywords": keywords,
-                "content": (doc or ""),
+                "content": doc or "",
                 "meta": meta or {}
             })
 
-        # Sort newest first
         entries.sort(key=lambda e: e.get("timestamp") or "", reverse=True)
         return jsonify(entries)
-
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/memory/inspect', methods=['GET'])
+@app.get("/api/memory/inspect")
 def inspect_memory():
-    """List all stored memories from persistent Halcyon memory."""
+    """Legacy list of stored memories (without keyword extraction)."""
     try:
         client = chromadb.PersistentClient(path="./memory_journals/halcyon_persistent")
         coll = client.get_collection("episodic_memory")
         results = coll.get(include=["documents", "metadatas"], limit=200)
-        ids = results.get("ids", list(range(len(results.get("documents", [])))))  # fallback IDs
+
+        ids = results.get("ids", list(range(len(results.get("documents", []))))) or []
         docs = results.get("documents", []) or []
         metas = results.get("metadatas", []) or []
 
         def parse_doc(doc: str, meta: dict):
-            """Parse stored document into fields (timestamp, query, reflection, state)."""
-            # Try JSON path first
             try:
                 obj = json.loads(doc)
                 ts = obj.get("timestamp") or meta.get("timestamp")
@@ -249,19 +232,16 @@ def inspect_memory():
                 state = obj.get("state") or state_from_meta(meta)
                 return ts, query, reflection, state
             except Exception:
-                pass
-            # Fallback for older/plain entries
-            ts = (meta or {}).get("timestamp", "")
-            q_match = re.search(r"User\s*Query:\s*(.+)", doc, re.IGNORECASE)
-            r_match = re.search(r"Reflection:\s*([\s\S]+)$", doc, re.IGNORECASE)
-            query = (q_match.group(1).strip() if q_match else "")
-            reflection = (r_match.group(1).strip() if r_match else "")
-            state = state_from_meta(meta)
-            return ts, query, reflection, state
+                ts = (meta or {}).get("timestamp", "")
+                q_match = re.search(r"User\s*Query:\s*(.+)", doc, re.IGNORECASE)
+                r_match = re.search(r"Reflection:\s*([\s\S]+)$", doc, re.IGNORECASE)
+                query = (q_match.group(1).strip() if q_match else "")
+                reflection = (r_match.group(1).strip() if r_match else "")
+                state = state_from_meta(meta)
+                return ts, query, reflection, state
 
         entries = []
         for id_, doc, meta in zip(ids, docs, metas):
-            meta = meta or {}
             ts, query, reflection, state = parse_doc(doc or "", meta or {})
             entries.append({
                 "id": id_,
@@ -269,26 +249,24 @@ def inspect_memory():
                 "query": query,
                 "reflection": reflection,
                 "state": state or {"emotions": []},
-                "content": (doc or ""),
+                "content": doc or "",
                 "meta": meta or {}
             })
 
-        # Sort newest-first by timestamp
         entries.sort(key=lambda e: e.get("timestamp") or "", reverse=True)
         return jsonify(entries)
-
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
-
-@app.route('/api/memory/test-recall', methods=['POST'])
+# ------------------------------------------------------------
+# Memory: recall test
+# ------------------------------------------------------------
+@app.post("/api/memory/test-recall")
 def test_recall():
-    """Test memory recall and visualize retrieved entries."""
+    """Test recall with a query and show retrieved entries."""
     try:
-        query = request.json.get("query", "test")
-
-        # Use recall_with_context instead of the old recall()
+        query = (request.json or {}).get("query", "test")
         results = hippocampus.recall_with_context(query)
 
         retrieved_docs = []
@@ -297,7 +275,6 @@ def test_recall():
                 text = node.get("text", None) or getattr(node, "text", None) or str(node)
             except Exception:
                 text = str(node)[:200]
-
             retrieved_docs.append({
                 "text_preview": text[:250],
                 "weight": node.get("weight", 1.0) if isinstance(node, dict) else 1.0
@@ -308,15 +285,15 @@ def test_recall():
             "retrieved_count": len(results),
             "memories": retrieved_docs
         })
-
     except Exception as e:
-        import traceback
         return jsonify({
             "error": str(e),
             "traceback": traceback.format_exc()
         }), 500
 
-
+# ------------------------------------------------------------
+# Run
+# ------------------------------------------------------------
 if __name__ == "__main__":
     port = int(os.getenv("HALCYON_PORT", 5000))
     print(f"[Server] Running on http://127.0.0.1:{port}")

@@ -1,1 +1,7 @@
-invalid type: string "User Query: hey, i have a pretty meta question. i am going to show you your operating logs. your initial thought was in regards to my question, but then after you were able to think about it, you defaulted. could you tell me why internally, and what you suggest i change to ensure you can maintain a train of thought?       -- TURN 1761006100 INITIATED --- [Thalamus] user_query
+-- SQLite does not support adding check with alter table, as a result, adding a check
+-- involve creating a new table and copying the data over. It is over kill with adding
+-- a boolean type column. The application write to the table needs to ensure the data
+-- integrity.
+ALTER TABLE collection_metadata ADD COLUMN bool_value INTEGER;
+ALTER TABLE segment_metadata ADD COLUMN bool_value INTEGER;
+7435
