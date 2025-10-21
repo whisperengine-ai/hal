@@ -185,19 +185,46 @@ class Thalamus:
         # 🩵 Emit internal monologue (lazy import to avoid circular dependency)
         try:
             from halcyon_events import emit_reflection, emit_attention
-            emit_reflection(turn_id, state, reflection)
-            print(f"[Thalamus] Emitted reflection for turn {turn_id}")
+
+            # 🧠 Build lightweight memory trace payload
+            recalled_trace = [
+                {
+                    "weight": round(m.get("weight", 0.0), 3),
+                    "decay": round(m.get("decay", 1.0), 3),
+                    "distance": round(m.get("distance", 0.0), 3),
+                    "text": (m.get("text") or "")[:200].replace("\n", " "),
+                }
+                for m in memories[:10]
+            ]
+
+            # 🪞 Emit final attention with memory trace attached
+            emit_attention(
+                turn_id=turn_id,
+                reflection=reflection,
+                response=response_text,
+                recalled_memories=recalled_trace,  # 👈 NEW: included in payload
+            )
+
+            print(f"[Thalamus] Emitted attention window for turn {turn_id} ({len(recalled_trace)} memories attached)")
         except Exception as e:
-            print(f"[Thalamus] Could not emit reflection: {e}")
+            print(f"[Thalamus] Could not emit attention window: {e}")
+
 
         # === Phase 2: Memory recall ===
         print("[Thalamus] Recalling memories...")
         recent_turns = self.hippocampus.get_recent_turns()
         memories = self.hippocampus.recall_with_context(user_query)
         print(f"[Thalamus] Recall returned {len(memories)} items")
+        print("[Memory Trace] Top recalled memories:")
+        for i, m in enumerate(memories[:10], 1):
+            print(f"  {i:02d}. weight={m['weight']:.3f} | decay={m['decay']:.3f} | distance={m['distance']:.3f}")
+            preview = m['text'][:200].replace("\n", " ")
+            print(f"      text={preview}...")
+
 
         # === Phase 3: Generate response ===
         print("[Thalamus] Generating response...")
+        
         response_text = self.cortex.respond(
             user_query=user_query,
             state=state,
