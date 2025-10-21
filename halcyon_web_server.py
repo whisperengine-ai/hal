@@ -38,6 +38,19 @@ hippocampus = Hippocampus(cortex)
 thalamus = Thalamus(cortex, hippocampus)
 print("[Server] Initialization complete.")
 
+@app.route("/api/test-attention")
+def api_test_attention():
+    from sse_bus import emit_sse
+    emit_sse("attention", {
+        "type": "attention_update",
+        "turn_id": 999,
+        "final_reflection": "Test reflection from /api/test-attention",
+        "response": "This is only a test.",
+        "timestamp": datetime.datetime.now().isoformat()
+    })
+    return jsonify({"status": "ok"})
+
+
 @app.route("/")
 def index():
     """Serve the frontend."""
@@ -49,58 +62,59 @@ import queue
 # global queue for streaming reflections
 reflection_stream = queue.Queue()
 
-@app.route("/api/reflection_raw", methods=["POST"])
-def api_reflection_raw():
-    """Handles pre-memory reflection emission (internal monologue coherence)."""
-    try:
-        data = request.get_json(force=True)
-        turn_id = data.get("turn_id")
-        state = data.get("state", {})
-        reflection = data.get("reflection", "")
-
-        payload = {
-            "turn_id": turn_id,
-            "type": "pre_memory_reflection",
-            "pre_reflection_state": state,
-            "pre_reflection_text": reflection
-        }
-
-        # broadcast to your front-end (SSE or WebSocket)
-        reflection_stream.put(payload)
-        print(f"[API] Emitted internal monologue window for turn {turn_id}")
-
-        return jsonify({"status": "ok"}), 200
-    except Exception as e:
-        print(f"[API ERROR] reflection_raw: {e}")
-        return jsonify({"status": "error", "error": str(e)}), 500
-
-@app.route("/api/reflection_raw", methods=["GET"])
-def stream_reflections():
-    """Stream internal monologue reflections live to the UI via SSE."""
-    def event_stream():
-        while True:
-            payload = reflection_stream.get()  # waits for new reflection
-            msg = f"data: {json.dumps(payload)}\n\n"
-            yield msg
-
-    return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
-
-# ============================================================
-# ATTENTION STREAMING
-# ============================================================
 
 from flask import Response, stream_with_context
-import json, datetime, time
-from sse_bus import sse_streams, emit_sse
+import json, time
+from sse_bus import sse_streams
+
+@app.route("/api/reflection_raw")
+def api_reflection_raw():
+    """Continuous event stream for internal monologue (SSE)."""
+    def stream():
+        q = sse_streams["reflection"]
+        while True:
+            try:
+                payload = q.get(timeout=1)
+                yield f"data: {json.dumps(payload)}\n\n"
+            except Exception:
+                # keep-alive heartbeat
+                yield ":\n\n"
+                time.sleep(1)
+    return Response(stream_with_context(stream()), mimetype="text/event-stream")
+
+
+def emit_reflection(turn_id: int, state: dict, reflection: str):
+    """Emit a pre-memory reflection event to the reflection SSE stream."""
+    payload = {
+        "turn_id": turn_id,
+        "type": "pre_memory_reflection",
+        "pre_reflection_state": state,
+        "pre_reflection_text": reflection,
+        "timestamp": datetime.datetime.now().isoformat()
+    }
+    sse_streams["reflection"].put(payload)
+    print(f"[SSE BUS] Emitted reflection update for turn {turn_id}")
+
+# ============================================================
+# 🩸 Attention Layer Stream (SSE)
+# ============================================================
+from flask import Response, stream_with_context
+import json, time
+from sse_bus import sse_streams
 
 @app.route("/api/attention_feed")
 def api_attention_feed():
-    """Server-Sent Events feed for the Attention window (final reflection + response)."""
+    """Continuous event stream for attention data (SSE)."""
     def stream():
+        q = sse_streams["attention"]
         while True:
-            payload = sse_streams["attention"].get()
-            yield f"data: {json.dumps(payload)}\n\n"
-            time.sleep(0.1)
+            try:
+                payload = q.get(timeout=1)
+                yield f"data: {json.dumps(payload)}\n\n"
+            except Exception:
+                # Keep connection alive
+                yield ":\n\n"
+                time.sleep(1)
     return Response(stream_with_context(stream()), mimetype="text/event-stream")
 
 
@@ -111,11 +125,10 @@ def emit_attention(turn_id: int, final_reflection: str, response: str):
         "type": "attention_update",
         "final_reflection": final_reflection,
         "response": response,
-        "timestamp": datetime.datetime.now().isoformat(),
+        "timestamp": datetime.datetime.now().isoformat()
     }
-    emit_sse("attention", payload)
-    print(f"[SSE BUS] 🩸 Emitted attention update for turn {turn_id}")
-
+    attention_stream.put(payload)
+    print(f"[API] Emitted attention update for turn {turn_id}")
 
 
 
@@ -149,7 +162,10 @@ def api_turn():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
+    
+# ============================================================
+# MEMORY INSPECTION + TESTING
+# ============================================================
 
 @app.route("/api/memories", methods=["GET"])
 def api_memories():
@@ -210,8 +226,6 @@ def api_memories():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
 
 @app.route('/api/memory/inspect', methods=['GET'])
 def inspect_memory():

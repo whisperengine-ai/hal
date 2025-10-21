@@ -9,6 +9,8 @@ import os
 import requests
 from llama_index.core import Settings
 
+from halcyon_web_server import emit_reflection
+
 # Prefer Attention if available; otherwise fall back to Hippocampus
 try:
     from attention import Attention as Hippocampus
@@ -180,6 +182,11 @@ class Thalamus:
         state, reflection = self.cortex.feel_and_reflect(user_query, turn_id, timestamp)
         print(f"[STATE DETECTED] {state}")
         print(f"[REFLECTION] {reflection}")
+
+        from halcyon_web_server import emit_reflection
+
+        emit_reflection(turn_id, state, reflection)
+
 
         # Stream raw reflection to UI
         try:

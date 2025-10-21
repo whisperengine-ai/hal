@@ -11,10 +11,9 @@ sse_streams = {
     "attention": Queue(),  # 🩸 new
 }
 
-def emit_sse(event_type: str, data: dict):
+def emit_sse(event_type, data):
     """Put data into the appropriate SSE queue."""
     if event_type in sse_streams:
         sse_streams[event_type].put(data)
-        print(f"[SSE BUS] Emitted {event_type} event.")
-    else:
-        print(f"[SSE BUS] ⚠️ Unknown event type: {event_type}")
+        print(f"[SSE BUS] Event emitted to '{event_type}' :: {data.get('turn_id', '?')}")
+
