@@ -82,6 +82,14 @@ def stream_reflections():
     return Response(stream_with_context(event_stream()), mimetype="text/event-stream")
 
 
+@app.route("/api/attention", methods=["GET"])
+def api_attention():
+    """Return current working attention window (short-term context)."""
+    try:
+        buffer = thalamus.get_attention_window()  # Implement this in Thalamus
+        return jsonify(buffer), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 

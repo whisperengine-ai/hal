@@ -161,10 +161,6 @@ class Cortex:
 # THALAMUS (ROUTER + COORDINATION)
 # ============================================================
 
-# ============================================================
-# thalamus.py — Signal Router + Coordination Layer (v3)
-# ============================================================
-
 import datetime
 import requests
 
@@ -237,6 +233,11 @@ class Thalamus:
         print(f"\n🪞 RESPONSE:\n{response_text}\n")
         print(f"--- TURN {turn_id} COMPLETE ---")
         return response_text
+    
+    def get_attention_window(self):
+        # Example: return last N turns as dicts
+        return getattr(self, "recent_turns", [])
+
 
 
 # ============================================================
