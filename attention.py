@@ -4,6 +4,8 @@
 
 import threading
 import datetime
+import os
+import json
 
 class Attention:
     """Manages layered short-term cognition: working, recall, and narrative windows."""
@@ -131,3 +133,48 @@ class Attention:
     def get_narrative_window(self):
         with self._lock:
             return list(self._narrative_window)
+
+# ============================================================
+# 💾 Narrative Persistence (load/save across restarts)
+# ============================================================
+
+    def save_narrative(self, path="./memory_journals/narrative_window.json"):
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(self._narrative_window, f, indent=2)
+            print(f"[Attention] Saved narrative ({len(self._narrative_window)} entries).")
+        except Exception as e:
+            print(f"[Attention.save_narrative] Error: {e}")
+
+    def load_narrative(self, path="./memory_journals/narrative_window.json"):
+        try:
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    self._narrative_window = json.load(f)
+                print(f"[Attention] Loaded narrative ({len(self._narrative_window)} entries).")
+            else:
+                self._narrative_window = []
+                print("[Attention] No prior narrative found — starting fresh.")
+        except Exception as e:
+            print(f"[Attention.load_narrative] Error: {e}")
+            self._narrative_window = []
+
+    def get_context(self, window_size: int = 10):
+        """
+        Retrieve the recent turn context for narrative continuity.
+        Returns a list of the most recent 'window_size' stored turns
+        from the working buffer or sustained context.
+        """
+        if hasattr(self, "working_buffer") and self.working_buffer:
+            recent = self.working_buffer[-window_size:]
+            print(f"[Attention] Returning {len(recent)} recent turns from working buffer.")
+            return recent
+        elif hasattr(self, "context_window") and self.context_window:
+            recent = self.context_window[-window_size:]
+            print(f"[Attention] Returning {len(recent)} recent turns from context_window.")
+            return recent
+        else:
+            print("[Attention] No recent context found; returning empty list.")
+            return []
+

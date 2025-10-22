@@ -23,7 +23,11 @@ class Hippocampus:
     # ---------------------------
     # Recall
     # ---------------------------
-    def recall_with_context(self, query, n_results=10):
+    def recall_with_context(self, query, n_results=None):
+        """Retrieve semantically relevant memories and print readable diagnostics."""
+        import datetime
+
+        n_results = n_results or self.MAX_MEMORIES
         vec = self.cortex.embed(query)
         results = self.coll.query(
             query_embeddings=[vec],
@@ -33,28 +37,58 @@ class Hippocampus:
 
         memories = []
         now = datetime.datetime.now()
+
         for i, doc in enumerate(results["documents"][0]):
             meta = results["metadatas"][0][i]
-            ts_str = meta.get("timestamp")
+            id_ = results["ids"][0][i]  # 🧠 added this line
+
+            timestamp_str = meta.get("timestamp")
             try:
-                ts = datetime.datetime.fromisoformat(ts_str)
+                ts = datetime.datetime.fromisoformat(timestamp_str)
                 age_days = (now - ts).total_seconds() / 86400
-                decay = max(0.1, 1 - (age_days / 7.0))
+                decay = max(0.1, 1 - (age_days / 7.0))  # fades after ~1 week
             except Exception:
                 decay = 1.0
+
             distance = results["distances"][0][i]
             weight = (1.5 - distance) * decay
+            snippet = doc[:120].replace("\n", " ").replace("\r", " ")
+
+            # Reinforcement: if a memory is retrieved, strengthen its decay factor and record access
+            if meta.get("rehearsal_count") is None:
+                meta["rehearsal_count"] = 1
+            else:
+                meta["rehearsal_count"] += 1
+
+            # Re-consolidation bonus (cap at 1.0 to prevent runaway weights)
+            reinforced_decay = min(1.0, decay * 1.05)
+            meta["decay"] = reinforced_decay
+
+            # Optional debug log
+            print(f"[Hippo.recall] Reinforced memory '{id_}' -> decay={reinforced_decay:.3f}, rehearsals={meta['rehearsal_count']}")
+
             memories.append({
                 "text": doc,
-                "meta": meta,
                 "weight": weight,
-                "decay": decay,
-                "distance": distance
+                "timestamp": timestamp_str,
+                "distance": distance,
+                "decay": reinforced_decay,  # 👈 this now reflects the reinforced value
             })
 
+            # 🧠 Debug log per memory
+            print(
+                f"[Hippo.recall] {i+1:02d} | "
+                f"weight={weight:.3f} | dist={distance:.3f} | decay={decay:.3f} | "
+                f"ts={timestamp_str or 'n/a'} | preview='{snippet}...'"
+            )
+
         memories.sort(key=lambda m: m["weight"], reverse=True)
-        print(f"[Hippo.recall] Retrieved {len(memories)} memories (weighted + decayed).")
-        return memories[:10]
+        memories = memories[:10]
+
+        print(f"[Hippo.recall] ✅ Retrieved {len(memories)} memories (weighted + decayed).")
+        self.recall_window = memories
+        return memories
+
 
     # ---------------------------
     # Commit

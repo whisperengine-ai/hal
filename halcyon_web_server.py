@@ -48,6 +48,7 @@ print("[Server] Initializing Halcyon core modules...")
 cortex = Cortex()
 hippocampus = Hippocampus(cortex)
 attention = Attention(hippocampus)
+attention.load_narrative()
 thalamus = Thalamus(cortex, hippocampus, attention)
 app.cortex = cortex
 app.hippocampus = hippocampus
