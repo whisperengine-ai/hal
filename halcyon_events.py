@@ -1,23 +1,36 @@
 # ============================================================
 # halcyon_events.py — unified event emitter bridge
 # ============================================================
+# halcyon_events.py
+import json
+from queue import Queue
 from sse_bus import sse_streams
-import datetime, json
+import datetime
 
-def emit_reflection(turn_id, state, reflection):
-    """Send internal monologue to the reflection SSE stream."""
+reflection_stream = Queue()  # this feeds /api/reflection_raw in your web server
+
+def emit_reflection(turn_id, reflection, state, keywords=None, timestamp=None):
     payload = {
         "type": "pre_memory_reflection",
         "turn_id": turn_id,
-        "timestamp": datetime.datetime.now().isoformat(),
+        "timestamp": timestamp,
+        "pre_reflection_text": reflection.strip(),
         "pre_reflection_state": state,
-        "pre_reflection_text": reflection,
+        "keywords": keywords or []
     }
-    sse_streams["reflection"].put(payload)  # 👈 important: use 'reflection', not 'attention'
+    try:
+        reflection_stream.put(json.dumps(payload))
+        print(f"[Events] Emitted reflection (turn {turn_id})")
+    except Exception as e:
+        print(f"[Events] Reflection emission failed: {e}")
 
 
-def emit_attention(turn_id, reflection, response):
-    """Send final reflection + response to the attention SSE stream."""
+
+def emit_attention(turn_id, reflection, response, recalled_memories=None):
+    """Send final reflection + response (and optional memory trace) to the attention SSE stream."""
+    from sse_bus import sse_streams
+    import datetime, json
+
     payload = {
         "type": "attention_update",
         "turn_id": turn_id,
@@ -25,7 +38,14 @@ def emit_attention(turn_id, reflection, response):
         "final_reflection": reflection,
         "response": response,
     }
-    sse_streams["attention"].put(payload)  # 👈 final output only here
+
+    # 👁️ Include recalled memories if provided
+    if recalled_memories:
+        payload["recalled_memories"] = recalled_memories
+
+    sse_streams["attention"].put(payload)
+    print(f"[Events] Emitted attention ({len(recalled_memories or [])} memories)")
+
     
 def emit_memory(turn_id, memory_summary, metadata):
     payload = {

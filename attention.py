@@ -1,73 +1,84 @@
 # ============================================================
-# attention.py — Hybrid Cognitive Buffer (Working + Recall + Narrative)
+# attention.py — Halcyon Working & Hybrid Recall Buffer
 # ============================================================
 
 import threading
 import datetime
-from hippocampus import Hippocampus
 
-class Attention(Hippocampus):
+class Attention:
     """Manages layered short-term cognition: working, recall, and narrative windows."""
 
-    def __init__(self, cortex, working_limit=10, narrative_limit=7):
-        super().__init__(cortex)
+    def __init__(self, hippocampus=None, working_limit=10, narrative_limit=7):
+        # Reference to long-term memory (Hippocampus) for hybrid recall
+        self.hippocampus = hippocampus
         self._lock = threading.Lock()
 
-        # --- Core short-term layers ---
-        self._working_buffer = []      # immediate conversation context
-        self._recall_window = []       # ephemeral recalled memories (clears each turn)
-        self._narrative_window = []    # rolling storyline buffer (persists few turns)
+        # Short-term layers
+        self._working_buffer = []      # immediate conversation context (turn snapshots)
+        self._recall_window = []       # ephemeral recalled memories (clears per turn)
+        self._narrative_window = []    # rolling storyline buffer (few recent turns persisted)
 
-        # --- Parameters ---
+        # Parameters
         self.working_limit = int(working_limit)
         self.narrative_limit = int(narrative_limit)
 
         print(f"[Attention] Initialized: working={self.working_limit}, narrative={self.narrative_limit}")
 
-    # ============================================================
-    # 🧩 Working Memory Buffer
-    # ============================================================
-
-    def push_turn(self, user_query, reflection, response):
+    # ---------------------------
+    # Working Memory
+    # ---------------------------
+    def push_turn(self, user_query, reflection, response, state=None, keywords=None, turn_id=None, task_id=None):
         with self._lock:
             self._working_buffer.append({
+                "turn_id": turn_id,
+                "task_id": task_id,
                 "user_query": user_query,
                 "reflection": reflection,
                 "response": response,
-                "timestamp": datetime.datetime.now().isoformat()
+                "state": state or {},
+                "keywords": keywords or [],
+                "timestamp": datetime.datetime.now().isoformat(),
             })
             if len(self._working_buffer) > self.working_limit:
                 self._working_buffer.pop(0)
         print(f"[Attention] Working buffer updated: {len(self._working_buffer)} turns stored.")
 
-    def get_context(self):
-        with self._lock:
-            return "\n".join([
-                f"[{i+1}] Q: {t['user_query']}\nA: {t['response']}"
-                for i, t in enumerate(self._working_buffer)
-            ])
-
-    # Hook used by Thalamus to keep short-form turn in working memory
     def sustain_context(self, payload: dict):
+        """Hook for Thalamus to update live working memory."""
         try:
             self.push_turn(
                 user_query=payload.get("user_query", ""),
                 reflection=payload.get("reflection", ""),
-                response=payload.get("response", "")
+                response=payload.get("response", ""),
+                state=payload.get("state") or {},
+                keywords=payload.get("keywords") or [],
+                turn_id=payload.get("turn_id"),
+                task_id=payload.get("task_id"),
             )
         except Exception as e:
             print(f"[Attention.sustain_context] Error: {e}")
 
-    # ============================================================
-    # 🔍 Hybrid Recall (Working + Episodic)
-    # ============================================================
+    def get_recent_turns(self, n=None):
+        with self._lock:
+            buf = list(self._working_buffer)
+        return buf[-(n or self.working_limit):]
 
+    def get_focus(self):
+        with self._lock:
+            return self._working_buffer[-1] if self._working_buffer else None
+
+    # ---------------------------
+    # Hybrid Recall (Working + Episodic)
+    # ---------------------------
     def recall_with_context(self, query, n_results=25):
         print("[Attention] Performing hybrid recall...")
-        long_term = super().recall(query=query, n_results=n_results, top_k=15)
+        long_term = []
+        if self.hippocampus:
+            long_term = self.hippocampus.recall_with_context(query=query, n_results=n_results)
+
         with self._lock:
             live = list(self._working_buffer)
-            self._recall_window = long_term[:]
+            self._recall_window = list(long_term)
 
         merged = []
         for item in live:
@@ -77,20 +88,24 @@ class Attention(Hippocampus):
                 "weight": 1.5
             })
         merged.extend(long_term)
-        merged.sort(key=lambda x: x["weight"], reverse=True)
+        merged.sort(key=lambda x: x.get("weight", 0.0), reverse=True)
 
         print(f"[Attention] Hybrid recall returned {len(merged)} combined items.")
         return merged
 
-    # ============================================================
-    # 🧠 Narrative Integration Layer
-    # ============================================================
+    def clear_recall_window(self):
+        with self._lock:
+            self._recall_window = []
+        print("[Attention] Cleared recall window.")
 
+    # ---------------------------
+    # Narrative Thread
+    # ---------------------------
     def update_narrative(self, user_query, reflection, response, recalled_memories=None):
         entry = {
             "query": user_query,
-            "reflection": reflection,
-            "response": response,
+            "reflection": (reflection or "")[:400],
+            "response": (response or "")[:400],
             "linked_memories": [
                 (m.get('meta') or {}).get('timestamp') for m in (recalled_memories or [])[:5]
             ],
@@ -113,15 +128,6 @@ class Attention(Hippocampus):
                 summary.append(f"{i+1}. {n.get('query','')} → {snippet}")
             return "\n".join(summary)
 
-    def clear_recall_window(self):
+    def get_narrative_window(self):
         with self._lock:
-            self._recall_window = []
-        print("[Attention] Cleared recall window.")
-
-    # ============================================================
-    # 🗄️ Delayed Commit (delegates to base for now)
-    # ============================================================
-
-    def delayed_commit(self, user_query, reflection, response, state_json, metadata=None):
-        """Expose the same API the Thalamus calls; defers to base encode for now."""
-        return super().delayed_commit(user_query, reflection, response, state_json, metadata)
+            return list(self._narrative_window)

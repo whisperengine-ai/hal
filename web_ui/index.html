@@ -29,6 +29,21 @@ button:hover { background:#2ea043; }
 .memory-card { border:1px solid #30363d; border-radius:8px; padding:0.75rem; margin-bottom:1rem; background:#161b22; }
 .memory-card h3 { margin-top:0; color:#79c0ff; font-size:1rem; }
 .memory-card pre { background:#0d1117; color:#79c0ff; padding:0.5rem; border-radius:6px; overflow-x:auto; }
+
+/* === Inspector Styling === */
+#inspector-output .internal-window {
+  background-color:#20242d;
+  border-left:4px solid #9fe7a4;
+  padding:1rem;
+  border-radius:8px;
+  margin-bottom:1rem;
+}
+#inspector-output pre {
+  background:#0d1117;
+  color:#9fe7a4;
+  padding:0.5rem;
+  border-radius:6px;
+}
 </style>
 </head>
 <body>
@@ -36,7 +51,7 @@ button:hover { background:#2ea043; }
 <!-- TAB BAR -->
 <div id="tab-bar">
   <div class="tab active" data-target="attention">🩸 Attention</div>
-  <div class="tab" data-target="reflection">🩵 Monologue</div>
+  <div class="tab" data-target="inspector">🧩 Inspector</div>
   <div class="tab" data-target="memory">🧠 Memory</div>
 </div>
 
@@ -45,9 +60,13 @@ button:hover { background:#2ea043; }
   <div id="attention-log">🩸 Awaiting attention data...</div>
 </div>
 
-<!-- MONOLOGUE -->
-<div id="reflection" class="window">
-  <div id="reflection-log">🩵 Awaiting internal monologue...</div>
+<!-- INSPECTOR -->
+<div id="inspector" class="window">
+  <div style="display:flex;gap:0.5rem;margin-bottom:0.5rem;">
+    <button onclick="loadNarrative()">📖 View Narrative</button>
+    <button onclick="loadRecentState()">🧠 Current State</button>
+  </div>
+  <div id="inspector-output">🧩 Awaiting inspection data...</div>
 </div>
 
 <!-- MEMORY -->
@@ -68,49 +87,41 @@ button:hover { background:#2ea043; }
 
 <script>
 const attentionLog=document.getElementById("attention-log");
-const reflectionLog=document.getElementById("reflection-log");
 const memoryOut=document.getElementById("memory-output");
 const queryBox=document.getElementById("query");
 
+// === Attention Stream ===
 function appendAttention(data){
   const box=document.createElement("div");
   box.className="attention-window";
-  box.innerHTML=`
-    <div class="header">🩸 Attention — Turn ${data.turn_id}</div>
-    <p class="reflection"><b>Final Reflection:</b> ${data.final_reflection}</p>
-    <p class="response"><b>Response:</b> ${data.response}</p>`;
+box.innerHTML = `
+  <div class="header">🩸 Attention — Turn ${data.turn_id}</div>
+  <p class="reflection"><b>Final Reflection:</b> ${data.reflection || "(none)"}</p>
+  <p class="response"><b>Response:</b> ${data.response}</p>`;
+
   attentionLog.appendChild(box);
   attentionLog.scrollTop=attentionLog.scrollHeight;
 }
-function appendReflection(data){
-  const box=document.createElement("div");
-  box.className="internal-window";
-  box.innerHTML=`
-    <div class="header">🧠 Monologue — Turn ${data.turn_id}</div>
-    <pre class="state">${JSON.stringify(data.pre_reflection_state,null,2)}</pre>
-    <p class="reflection">${data.pre_reflection_text}</p>`;
-  reflectionLog.appendChild(box);
-  reflectionLog.scrollTop=reflectionLog.scrollHeight;
-}
 
-// --- STREAMS ---
-const monologueStream=new EventSource("/api/reflection_raw");
-monologueStream.onmessage=(event)=>{
-  try{const data=JSON.parse(event.data);
-    if(data.type==="pre_memory_reflection"){appendReflection(data);}
-  }catch(e){console.error(e);}
-};
-monologueStream.onerror=(e)=>console.warn("Monologue stream error:",e);
+// 👁️ Auto-refresh Inspector when new attention arrives
+function autoRefreshInspector(){
+  loadRecentState();
+  loadNarrative();
+}
 
 const attentionStream=new EventSource("/api/attention_feed");
 attentionStream.onmessage=(event)=>{
-  try{const data=JSON.parse(event.data);
-    if(data.type==="attention_update"){appendAttention(data);}
+  try{
+    const data=JSON.parse(event.data);
+    if(data.type==="attention_update"){
+      appendAttention(data);
+      autoRefreshInspector();  // 👈 refresh on each new turn
+    }
   }catch(e){console.error(e);}
 };
 attentionStream.onerror=(e)=>console.warn("Attention stream error:",e);
 
-// --- Chat Send ---
+// === Chat Send ===
 async function sendQuery(){
   const q=queryBox.value.trim();
   if(!q)return;
@@ -122,7 +133,7 @@ async function sendQuery(){
 document.getElementById("send").onclick=sendQuery;
 queryBox.addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();sendQuery();}});
 
-// --- Memory ---
+// === Memory ===
 async function loadMemories(){
   const res=await fetch("/api/memories");
   const data=await res.json();
@@ -142,7 +153,37 @@ async function testRecall(){
 }
 function clearMemories(){memoryOut.innerHTML="";}
 
-// --- Tabs ---
+// === Inspector ===
+async function loadNarrative(){
+  const res=await fetch("/api/narrative");
+  const data=await res.json();
+  const el=document.getElementById("inspector-output");
+  if(data.summary){
+    el.innerHTML=`<div class="internal-window"><div class="header">📖 Personal Narrative</div><p>${data.summary}</p></div>`;
+  }else{
+    el.innerText="No narrative yet.";
+  }
+}
+
+async function loadRecentState(){
+  const res=await fetch("/api/state");
+  const data=await res.json();
+  const el=document.getElementById("inspector-output");
+  if(data.error){
+    el.innerText="Error: " + data.error;
+    return;
+  }
+  el.innerHTML=`
+  <div class="internal-window">
+    <div class="header">🧠 Current Cognitive State — Turn ${data.turn_id}</div>
+    <pre class="state">${JSON.stringify(data.state,null,2)}</pre>
+    <p><b>Reflection:</b> ${data.reflection || "(none)"}</p>
+    <p><b>Keywords:</b> ${(data.keywords || []).join(", ") || "(none)"}</p>
+    <p><b>Response:</b> ${data.response || "(none)"}</p>
+  </div>`;
+}
+
+// === Tabs ===
 document.querySelectorAll(".tab").forEach(tab=>{
   tab.addEventListener("click",()=>{
     document.querySelectorAll(".tab").forEach(t=>t.classList.remove("active"));
@@ -152,5 +193,6 @@ document.querySelectorAll(".tab").forEach(tab=>{
   });
 });
 </script>
+
 </body>
 </html>

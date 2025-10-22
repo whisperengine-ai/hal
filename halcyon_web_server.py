@@ -13,12 +13,9 @@ import re
 import datetime
 import traceback
 import chromadb
-
-# Core runtime
-import halcyon_brainstem
-print(f"[DEBUG] halcyon_brainstem location: {halcyon_brainstem.__file__}")
 from halcyon_brainstem import Cortex, Thalamus
 from hippocampus import Hippocampus
+from attention import Attention
 
 # Unified SSE bus (monologue + attention)
 from sse_bus import sse_streams
@@ -50,7 +47,14 @@ CORS(app)  # local browser requests
 print("[Server] Initializing Halcyon core modules...")
 cortex = Cortex()
 hippocampus = Hippocampus(cortex)
-thalamus = Thalamus(cortex, hippocampus)
+attention = Attention(hippocampus)
+thalamus = Thalamus(cortex, hippocampus, attention)
+app.cortex = cortex
+app.hippocampus = hippocampus
+app.attention = attention
+app.thalamus = thalamus
+
+
 print("[Server] Initialization complete.")
 
 # ------------------------------------------------------------
@@ -258,6 +262,48 @@ def inspect_memory():
     except Exception as e:
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+    
+# ------------------------------------------------------------
+# Monologue history
+    
+@app.route("/api/monologue")
+def api_monologue():
+    try:
+        from hippocampus import Hippocampus
+        hippo = Hippocampus()
+        monologues = hippo.get_recent_monologues(limit=10)  # you can define this helper
+        return jsonify({"monologues": monologues})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    
+# ------------------------------------------------------------
+# Inspector: current state (from Attention focus)
+# ------------------------------------------------------------
+@app.get("/api/state")
+def api_state():
+    try:
+        focus = attention.get_focus()
+        if not focus:
+            return jsonify({"error": "No focus yet"}), 404
+        return jsonify(focus), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# ------------------------------------------------------------
+# Inspector: narrative summary + window (from Attention)
+# ------------------------------------------------------------
+@app.get("/api/narrative")
+def api_narrative():
+    try:
+        summary = attention.get_narrative_summary()
+        window = attention.get_narrative_window()
+        return jsonify({"summary": summary, "window": window}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+
+
 
 # ------------------------------------------------------------
 # Memory: recall test
