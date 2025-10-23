@@ -4,25 +4,35 @@
 # halcyon_events.py
 import json
 from queue import Queue
-from sse_bus import sse_streams
+from sse_bus import emit_sse, sse_streams
+
+def broadcast_event(event_type: str, payload: dict):
+    """Simple alias for emit_sse to preserve legacy naming."""
+    emit_sse(event_type, payload)
+
 import datetime
 
 reflection_stream = Queue()  # this feeds /api/reflection_raw in your web server
 
-def emit_reflection(turn_id, reflection, state, keywords=None, timestamp=None):
+def emit_reflection(turn_id, reflection=None, state=None, keywords=None, timestamp=None):
+    """Emit reflection events safely — tolerant of missing first-pass data."""
+    if reflection is None:
+        print(f"[Events] (Reflection skipped for turn {turn_id})")
+        return  # no-op when reflection intentionally omitted
+
     payload = {
-        "type": "pre_memory_reflection",
         "turn_id": turn_id,
-        "timestamp": timestamp,
-        "pre_reflection_text": reflection.strip(),
-        "pre_reflection_state": state,
-        "keywords": keywords or []
+        "timestamp": timestamp or datetime.datetime.now().isoformat(),
+        "state": state or {},
+        "reflection": reflection,
+        "keywords": keywords or [],
     }
     try:
-        reflection_stream.put(json.dumps(payload))
+        broadcast_event("reflection", payload)
         print(f"[Events] Emitted reflection (turn {turn_id})")
     except Exception as e:
-        print(f"[Events] Reflection emission failed: {e}")
+        print(f"[Events] Reflection emit failed: {e}")
+
 
 
 

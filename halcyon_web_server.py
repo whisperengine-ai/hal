@@ -15,7 +15,7 @@ import traceback
 import chromadb
 from halcyon_brainstem import Cortex, Thalamus
 from hippocampus import Hippocampus
-from attention import Attention
+from context_window_manager import ContextWindowManager
 
 # Unified SSE bus (monologue + attention)
 from sse_bus import sse_streams
@@ -47,12 +47,12 @@ CORS(app)  # local browser requests
 print("[Server] Initializing Halcyon core modules...")
 cortex = Cortex()
 hippocampus = Hippocampus(cortex)
-attention = Attention(hippocampus)
-attention.load_narrative()
-thalamus = Thalamus(cortex, hippocampus, attention)
+context = ContextWindowManager(hippocampus)
+context.load()
+thalamus = Thalamus(cortex, hippocampus, context)
 app.cortex = cortex
 app.hippocampus = hippocampus
-app.attention = attention
+app.context = context
 app.thalamus = thalamus
 
 
@@ -283,7 +283,7 @@ def api_monologue():
 @app.get("/api/state")
 def api_state():
     try:
-        focus = attention.get_focus()
+        focus = app.context.get_focus()
         if not focus:
             return jsonify({"error": "No focus yet"}), 404
         return jsonify(focus), 200
@@ -296,8 +296,8 @@ def api_state():
 @app.get("/api/narrative")
 def api_narrative():
     try:
-        summary = attention.get_narrative_summary()
-        window = attention.get_narrative_window()
+        summary = app.context.summarize()
+        window = app.context.get_narrative_window()
         return jsonify({"summary": summary, "window": window}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
