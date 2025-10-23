@@ -98,10 +98,12 @@ class ContextWindowManager:
         with self.lock:
             if not self.narrative_window:
                 return "(no narrative yet)"
-            return "\n".join([
-                f"{i+1}. {n['query']} → {(n['response'] or '')[:160].replace('\\n',' ')}"
-                for i, n in enumerate(self.narrative_window)
-            ])
+            summary_lines = []
+            for i, n in enumerate(self.narrative_window):
+                resp = (n.get("response") or "").replace("\n", " ")[:160]
+                summary_lines.append(f"{i+1}. {n.get('query', '')} → {resp}")
+            return "\n".join(summary_lines)
+
 
     def get_narrative_window(self):
         with self.lock:
