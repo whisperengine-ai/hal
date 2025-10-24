@@ -12,36 +12,104 @@
   }
   *{box-sizing:border-box}
   body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--ink);margin:0}
+
   /* Tabs */
   #tab-bar{display:flex;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
   .tab{flex:1;padding:.75rem;text-align:center;cursor:pointer;font-weight:700;user-select:none}
   .tab.active{background:var(--ok)}
+
   /* Windows */
   .window{display:none;height:calc(100vh - 140px);overflow-y:auto;overflow-x:hidden;padding:1rem}
   .window.active{display:block}
+
   /* Input */
   #input-area{display:flex;border-top:1px solid var(--line);position:sticky;bottom:0;background:var(--panel)}
   #query{flex:1;padding:1rem;background:var(--panel);color:var(--ink);border:none;outline:none;font-size:1rem}
   button{background:var(--ok);color:#fff;border:none;padding:1rem;cursor:pointer;font-weight:700;border-left:1px solid var(--line)}
   button:hover{background:var(--ok2)}
+
   /* Cards / blocks */
-  .internal-window{background:#1d2330;border-left:4px solid var(--mint);margin:8px 0;padding:12px;border-radius:10px}
-  .internal-window .header{font-weight:700;color:var(--mint);margin-bottom:8px}
   .attention-window{background:#2a2116;border-left:4px solid var(--amber);margin:8px 0;padding:12px;border-radius:10px}
   .attention-window .header{font-weight:700;color:var(--amber);margin-bottom:8px}
   .memory-card{border:1px solid var(--line);border-radius:10px;padding:.75rem;margin-bottom:1rem;background:var(--panel)}
   .memory-card h3{margin:.25rem 0;color:var(--blue);font-size:1rem}
+
   /* Code / pre */
   pre{background:#0b0f14;color:#cfe3ff;border:1px solid #0b2236;border-radius:8px;padding:.75rem;white-space:pre-wrap;word-wrap:break-word;overflow-x:auto}
   code{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace}
   .kv{color:#cbd5e1}
-  /* Inspector layout fixes: independent boxes so they don’t overwrite each other */
-  #inspector-output{display:flex;flex-direction:column;gap:12px}
-  #narrative-box, #state-box{min-height:0}
-  /* Narrative full view */
-  .narrative-entry{border:1px solid var(--line);border-radius:10px;padding:12px;background:#12161d;margin-bottom:10px}
-  .narrative-entry h4{margin:0 0 .5rem 0;color:var(--blue)}
-  .nmeta{color:var(--muted);font-size:.9rem;margin-bottom:.5rem}
+
+/* ===== Emotional State Styling ===== */
+.state-window {
+  background: #142217;
+  border-left: 4px solid var(--mint);
+  border-radius: 10px;
+  margin: 10px 0;
+  padding: 10px 14px;
+  font-size: 0.95rem;
+  color: var(--mint);
+  box-shadow: 0 0 6px rgba(159, 231, 164, 0.1);
+  transition: background 0.3s ease, box-shadow 0.3s ease;
+}
+.state-window:hover {
+  background: #17311c;
+  box-shadow: 0 0 12px rgba(159, 231, 164, 0.25);
+}
+.state-window pre {
+  background: #0b140e;
+  border: 1px solid rgba(159, 231, 164, 0.2);
+  color: #cfe3cf;
+  border-radius: 6px;
+}
+
+/* ===== Optional Animation Enhancements ===== */
+.attention-window {
+  animation: fadeInSlide 0.5s ease-out forwards;
+  position: relative;
+  overflow: hidden;
+}
+
+@keyframes fadeInSlide {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* Mint pulse accent — left border shimmer when new reflection arrives */
+.attention-window::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 4px;
+  height: 100%;
+  background: linear-gradient(180deg, rgba(159,231,164,0.7), rgba(159,231,164,0));
+  transform: translateY(-100%);
+  animation: mintPulse 1s ease-out forwards;
+}
+
+@keyframes mintPulse {
+  from { transform: translateY(-100%); opacity: 0; }
+  40% { opacity: 1; }
+  to { transform: translateY(100%); opacity: 0; }
+}
+  #memory button {
+    background: var(--ok);
+    border: none;
+    color: white;
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: background 0.2s ease;
+  }
+  #memory button:hover { background: var(--ok2); }
+
+  .memory-card.selected {
+    border-color: var(--mint);
+    box-shadow: 0 0 8px var(--mint);
+    background-color: #18231c;
+  }
+
 </style>
 </head>
 <body>
@@ -49,7 +117,6 @@
 <!-- TAB BAR -->
 <div id="tab-bar">
   <div class="tab active" data-target="attention">🩸 Attention</div>
-  <div class="tab" data-target="inspector">🧩 Inspector</div>
   <div class="tab" data-target="memory">🧠 Memory</div>
 </div>
 
@@ -58,27 +125,58 @@
   <div id="attention-log">🩸 Awaiting attention data...</div>
 </div>
 
-<!-- INSPECTOR -->
-<div id="inspector" class="window">
-  <div style="display:flex;gap:.5rem;margin-bottom:.5rem;flex-wrap:wrap">
-    <button onclick="loadNarrative()">📖 View Narrative</button>
-    <button onclick="loadRecentState()">🧠 Current State</button>
-  </div>
-  <div id="inspector-output">
-    <div id="narrative-box">📖 Awaiting narrative…</div>
-    <div id="state-box">🧠 Awaiting state…</div>
-  </div>
-</div>
-
 <!-- MEMORY -->
 <div id="memory" class="window">
-  <div style="display:flex;gap:.5rem;margin-bottom:.5rem;flex-wrap:wrap">
-    <button onclick="loadMemories()">📋 View All Memories</button>
-    <button onclick="testRecall()">🔍 Test Recall</button>
-    <button onclick="clearMemories()">✕ Clear</button>
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;">
+    <button id="btn-view-all">📜 View All</button>
+    <input id="memory-search" type="text" placeholder="Search memories..." 
+           style="flex:1;padding:0.5rem;background:#111;color:#eee;border:1px solid #333;border-radius:6px;">
+    <button id="btn-search">🔍 Search</button>
+    <button id="btn-push-anchor">📌 Push to Anchor</button>
   </div>
-  <div id="memory-output"></div>
+  <div id="memory-output" class="memory-list"></div>
 </div>
+
+
+<style>
+.memory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px;
+}
+
+.memory-card {
+  background-color: #1e1e1e;
+  border: 1px solid #333;
+  border-radius: 10px;
+  padding: 12px 16px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+  transition: all 0.2s ease-in-out;
+}
+
+.memory-card:hover {
+  border-color: #6cf;
+  box-shadow: 0 0 6px #6cf;
+}
+
+.memory-header {
+  font-size: 0.9em;
+  color: #aaa;
+  margin-bottom: 4px;
+}
+
+.memory-body p {
+  margin: 4px 0;
+  color: #ddd;
+}
+
+b {
+  color: #fff;
+}
+</style>
+
+
 
 <!-- INPUT -->
 <div id="input-area">
@@ -91,8 +189,6 @@
   const attentionLog = document.getElementById("attention-log");
   const memoryOut   = document.getElementById("memory-output");
   const queryBox    = document.getElementById("query");
-  const narrativeBox= document.getElementById("narrative-box");
-  const stateBox    = document.getElementById("state-box");
 
   function escapeHTML(s=""){
     return String(s)
@@ -100,7 +196,6 @@
       .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
   }
 
-  // Render text, upgrading fenced blocks ```lang ... ``` into <pre><code>
   function renderRichText(text){
     if(!text) return "(none)";
     const m = /^```([\w-]+)?\n([\s\S]*?)```$/m.exec(text.trim());
@@ -115,33 +210,59 @@
     return `<pre><code>${escapeHTML(JSON.stringify(obj, null, 2))}</code></pre>`;
   }
 
-  /* ===== Attention Stream ===== */
-  function appendAttention(data){
-    if(attentionLog.textContent.includes("Awaiting attention")) attentionLog.innerHTML = "";
-    const box = document.createElement("div");
-    box.className = "attention-window";
-    box.innerHTML = `
-      <div class="header">🩸 Attention — Turn ${data.turn_id}</div>
-      <div><b>Final Reflection:</b> ${renderRichText(data.reflection || "(none)")}</div>
-      <div><b>Response:</b> ${renderRichText(data.response || "(none)")}</div>
-    `;
-    attentionLog.appendChild(box);
-    attentionLog.scrollTop = attentionLog.scrollHeight;
+/* ===== Attention Stream ===== */
+const attentionStream = new EventSource("/api/attention_feed");
+
+attentionStream.onmessage = (event) => {
+  if (!event.data || event.data.trim() === "") return; // skip heartbeats
+  try {
+    const data = JSON.parse(event.data);
+    const type = data.type || "attention_update";
+
+    // 🩸 Only handle stabilized reflections or attention updates
+    if (type === "reflection_update" || type === "attention_update") {
+      const reflection = data.reflection || "(none)";
+      const response = data.response || "(none)";
+      const turn = data.turn_id || "?";
+      const state = data.state || {};
+
+      appendAttention({
+  turn_id: turn,
+  reflection: reflection,
+  response: response,
+  state: data.state || data.final_state || {}
+});
+
+    }
+  } catch (err) {
+    console.warn("Attention stream parse error:", err, "Raw data:", event.data);
   }
+};
 
-  function autoRefreshInspector(){ loadRecentState(); loadNarrative(); }
+function appendAttention({turn_id, reflection, response, state}) {
+  const box = document.createElement("div");
+  box.className = "attention-window";
+  const emotionalState = state && Object.keys(state).length
+    ? `<div class="internal-window" style="background:#061f0d;border-left:4px solid #00ff90;margin:8px 0;padding:12px;border-radius:10px">
+         <div class="header">💗 Emotional State:</div>
+         <pre><code>${escapeHTML(JSON.stringify(state, null, 2))}</code></pre>
+       </div>`
+    : `<div class="internal-window" style="background:#061f0d;border-left:4px solid #00ff90;margin:8px 0;padding:12px;border-radius:10px">
+         <div class="header">💗 Emotional State:</div>
+         <div class="kv">{}</div>
+       </div>`;
 
-  const attentionStream = new EventSource("/api/attention_feed");
-  attentionStream.onmessage = (event)=>{
-    try{
-      const data = JSON.parse(event.data);
-      if(data.type === "attention_update"){
-        appendAttention(data);
-        autoRefreshInspector();
-      }
-    }catch(e){ console.error(e); }
-  };
-  attentionStream.onerror = (e)=>console.warn("Attention stream error:", e);
+  box.innerHTML = `
+    <div class="header">🩸 Attention — Turn ${escapeHTML(turn_id)}</div>
+    <p><b>Reflection:</b></p>${renderRichText(reflection || "(none)")}
+    ${emotionalState}
+    <p><b>Response:</b></p>${renderRichText(response || "(none)")}
+  `;
+  attentionLog.prepend(box);
+}
+
+
+attentionStream.onerror = (err) => console.warn("Attention stream error:", err);
 
   /* ===== Chat ===== */
   async function sendQuery(){
@@ -159,20 +280,82 @@
     if(e.key==="Enter"){e.preventDefault();sendQuery();}
   });
 
-  /* ===== Memory ===== */
-  async function loadMemories(){
-    const res = await fetch("/api/memories");
-    const data = await res.json();
-    memoryOut.innerHTML = data.map(m => `
-      <div class="memory-card">
-        <h3>🕓 ${escapeHTML(m.timestamp || "")}</h3>
+let allMemories = [];
+
+// Load all memories
+async function loadMemories() {
+  const res = await fetch("/api/memories");
+  const data = await res.json();
+  allMemories = data;
+  renderMemories(data);
+}
+
+// Render memory cards
+function renderMemories(memories) {
+  memoryOut.innerHTML = memories.map((m, i) => `
+    <div class="memory-card" data-index="${i}">
+      <div class="memory-header">
+        <span class="timestamp">${escapeHTML(m.timestamp || "")}</span>
+      </div>
+      <div class="memory-body">
         <p><b>Query:</b> ${escapeHTML(m.query || "")}</p>
         <p><b>Reflection:</b> ${escapeHTML(m.reflection || "")}</p>
-        ${renderJSON(m.state || {})}
-        ${m.keywords?.length ? `<p><b>Keywords:</b> ${m.keywords.map(escapeHTML).join(", ")}</p>` : ""}
       </div>
-    `).join("");
+    </div>
+  `).join("");
+
+  // Add click-to-select functionality
+  document.querySelectorAll(".memory-card").forEach(card => {
+    card.addEventListener("click", () => {
+      card.classList.toggle("selected");
+    });
+  });
+}
+
+// View all memories
+document.getElementById("btn-view-all").addEventListener("click", () => {
+  renderMemories(allMemories);
+});
+
+// Manual search
+document.getElementById("btn-search").addEventListener("click", async () => {
+  const q = document.getElementById("memory-search").value.trim().toLowerCase();
+  if (!q) return renderMemories(allMemories);
+  const filtered = allMemories.filter(m =>
+    (m.query || "").toLowerCase().includes(q) ||
+    (m.reflection || "").toLowerCase().includes(q)
+  );
+  renderMemories(filtered);
+});
+
+// Push selected memories to anchor
+document.getElementById("btn-push-anchor").addEventListener("click", async () => {
+  const selectedCards = document.querySelectorAll(".memory-card.selected");
+  if (!selectedCards.length) {
+    alert("Select at least one memory to inject.");
+    return;
   }
+
+  const selectedMemories = Array.from(selectedCards).map(card => {
+    const idx = parseInt(card.dataset.index);
+    return allMemories[idx];
+  });
+
+  const res = await fetch("/api/memory/inject", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ memories: selectedMemories })
+  });
+
+  const result = await res.json();
+  if (result.status === "ok") {
+    alert(`✅ Injected ${result.injected} memories into anchor.`);
+    selectedCards.forEach(card => card.classList.remove("selected"));
+  } else {
+    alert(`⚠️ Injection failed: ${result.error || "unknown error"}`);
+  }
+});
+
   async function testRecall(){
     const query = prompt("Enter recall query:"); if(!query) return;
     const res = await fetch("/api/memory/test-recall",{
@@ -182,57 +365,8 @@
     const data = await res.json();
     memoryOut.innerHTML = renderJSON(data);
   }
+
   function clearMemories(){ memoryOut.innerHTML = ""; }
-
-  /* ===== Inspector ===== */
-  // FULL, NON-TRUNCATED personal narrative view
-  async function loadNarrative(){
-    const res = await fetch("/api/narrative");
-    const data = await res.json();
-    const windowArr = Array.isArray(data.window) ? data.window : [];
-    if(windowArr.length === 0){
-      narrativeBox.innerHTML = `<div class="internal-window">
-        <div class="header">📖 Personal Narrative</div>
-        <div class="kv">(no narrative yet)</div>
-      </div>`;
-      return;
-    }
-    const full = windowArr.map((n,i)=>`
-      <div class="narrative-entry">
-        <h4>Entry ${i+1}</h4>
-        <div class="nmeta">${escapeHTML(n.timestamp || "")}</div>
-        <p><b>Query:</b> ${escapeHTML(n.query || "")}</p>
-        <p><b>Reflection:</b></p>${renderRichText(n.reflection || "")}
-        <p><b>Response:</b></p>${renderRichText(n.response || "")}
-        ${n.linked?.length ? `<p class="nmeta"><b>Linked:</b> ${n.linked.map(escapeHTML).join(", ")}</p>` : ""}
-      </div>
-    `).join("");
-    narrativeBox.innerHTML = `
-      <div class="internal-window">
-        <div class="header">📖 Personal Narrative — Full Contents</div>
-        ${full}
-      </div>
-    `;
-  }
-
-  // Pretty JSON state; lives in its own box (no clobbering narrative)
-  async function loadRecentState(){
-    const res = await fetch("/api/state");
-    const data = await res.json();
-    if(data.error){
-      stateBox.innerHTML = `<div class="internal-window"><div class="header">🧠 Current Cognitive State</div><div class="kv">${escapeHTML(data.error)}</div></div>`;
-      return;
-    }
-    stateBox.innerHTML = `
-      <div class="internal-window">
-        <div class="header">🧠 Current Cognitive State — Turn ${escapeHTML(data.turn_id || "")}</div>
-        ${renderJSON(data.state || {})}
-        <p><b>Reflection:</b></p>${renderRichText(data.reflection || "(none)")}
-        <p><b>Keywords:</b> ${(data.keywords || []).map(escapeHTML).join(", ") || "(none)"}</p>
-        <p><b>Response:</b></p>${renderRichText(data.response || "(none)")}
-      </div>
-    `;
-  }
 
   /* ===== Tabs ===== */
   document.querySelectorAll(".tab").forEach(tab=>{
@@ -243,6 +377,9 @@
       document.getElementById(tab.dataset.target).classList.add("active");
     });
   });
+  window.addEventListener("DOMContentLoaded", () => {
+  loadMemories(); // 🔥 triggers the GET /api/memories request
+});
 </script>
 
 </body>

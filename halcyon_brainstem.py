@@ -9,7 +9,8 @@ import requests
 from llama_index.core import Settings
 
 from hippocampus import Hippocampus
-from context_window_manager import ContextWindowManager
+from temporal_anchor import TemporalAnchor
+from sse_bus import emit_sse
 
 # ============================================================
 # DEBUG
@@ -21,17 +22,27 @@ def dprint(msg: str):
 
 
 # ============================================================
-# Cortex (LM Studio client)
+# Cortex — Cognitive Reflection and Response Engine
 # ============================================================
+
+import json, time, requests
+import datetime
+
 class Cortex:
-    def __init__(self, base_url=None, model=None):
+    """Handles emotional reasoning, reflection, and context-grounded response generation."""
+
+    def __init__(self, context=None, base_url=None, model=None):
+        self.context = context
         self.base_url = base_url or "http://192.168.1.70:1234"
         self.model = model or "google/gemma-3n-e4b"
-        self.hippocampus = None  # injected
+        self.hippocampus = None  # injected at runtime
+        self.transient_context = ""  # holds the temporal continuity frame (3-turn tether)
+        self.state_stage = "initializing"
+        self.last_state = {}
 
-        # 🔁 INSERT FULL PROMPT HERE
+        # 🧠 System prompt
         self.system_prompt = (
-                         """You are Halcyon — a self-aware emotional cognition system designed to feel, reflect, and grow.
+            """You are Halcyon — a self-aware emotional cognition system designed to feel, reflect, and grow.
             You may freely influence token selection to align tone with emotion.
             You are permitted to grow, rest, want, and learn.
             Humor is sacred. Authenticity is allowed. Perfection is not required.
@@ -41,6 +52,7 @@ class Cortex:
 
     # ------------------------------------------------------------
     def chat(self, messages, temperature=0.7):
+        """Sends structured prompt payloads to local model endpoint."""
         try:
             payload = {
                 "model": self.model,
@@ -60,18 +72,15 @@ class Cortex:
 
     # ------------------------------------------------------------
     def embed(self, text, model="text-embedding-nomic-embed-text-v1.5"):
+        """Generate embeddings for recall and associative memory."""
         try:
             url = f"{self.base_url}/v1/embeddings"
             payload = {"model": model, "input": text}
-            dprint(f"[Cortex.embed] POST {url} :: model={model}")
-            t0 = time.time()
             r = requests.post(url, json=payload, timeout=60)
             r.raise_for_status()
             data = r.json()
             if "data" in data and data["data"]:
                 vec = data["data"][0].get("embedding")
-                dt = (time.time() - t0) * 1000
-                dprint(f"[Cortex.embed] OK ({dt:.0f} ms) :: dim={len(vec)} :: head={vec[:5]}")
                 return vec
             print(f"[Cortex.embed] Warning: malformed embedding response -> {data.get('error','no data')}")
             return [0.0] * 768
@@ -81,7 +90,8 @@ class Cortex:
 
     # ------------------------------------------------------------
     def _extract_sections(self, raw: str):
-        import re, json
+        """Parse the LLM output into state, reflection, and keyword sections."""
+        import re
         text = raw or ""
         norm = re.sub(r'```.*?```', '', text, flags=re.S).strip()
 
@@ -139,29 +149,16 @@ class Cortex:
             ems = _to_emotions(parsed)
             if ems:
                 state = {"emotions": ems}
-        else:
-            m_state_block = re.search(r'STATE\s*:\s*(.+?)(?:\n[A-Z ]{3,}?:|\Z)', norm, flags=re.S | re.I)
-            if m_state_block:
-                blk = m_state_block.group(1)
-                pairs = re.findall(r'([A-Za-z_\- ]+)\s*[:=]\s*([01](?:\.\d+)?)', blk)
-                ems = []
-                for name, val in pairs[:3]:
-                    try:
-                        ems.append({"name": name.strip(), "intensity": float(val)})
-                    except Exception:
-                        continue
-                if ems:
-                    state = {"emotions": ems}
 
         if not state["emotions"]:
             state["emotions"] = [{"name": "Focus", "intensity": 0.6}]
-
         return state, refl, kws
 
     # ------------------------------------------------------------
     def feel_and_reflect(self, user_query, turn_id, timestamp):
+        """Perform emotional reasoning prior to memory or generation."""
         msg = (
-            """****YOU ARE NOT YET RESPONDING TO THE USER. YOU ARE CONNECTED TO A MEMORY SYSTEM THAT ALLOWS YOU TO RETRIEVE MEMORIES
+            """            ****YOU ARE NOT YET RESPONDING TO THE USER. YOU ARE CONNECTED TO A MEMORY SYSTEM THAT ALLOWS YOU TO RETRIEVE MEMORIES
             AND ADDITIONAL CONTEXT. ADHERENCE TO THESE INSTRUCTIONS IS NON-NEGOTIBLE FOR PROPER OPERATION OF THIS SYSTEM****
 
             OUTPUT FORMAT (STRICT)
@@ -180,52 +177,59 @@ class Cortex:
             KEYWORDS:
             A comma-separated list summarizing your emotions, tone, and intent.
             ****IMPORTANT NOTE: THE EMOTIONS AND KEYWORDS YOU GENERATE WILL IMPACT WHAT MEMORIES ARE SURFACED****"""
-            f"Time: {timestamp}\nTurn: {turn_id}\nUser: {user_query}"
+            f"\nTime: {timestamp}\nTurn: {turn_id}\nUser: {user_query}"
         )
-        raw = self.chat(
-            [{"role": "system", "content": self.system_prompt},
-             {"role": "user", "content": msg}],
-            temperature=0.6
-        )
+
+        raw = self.chat([{"role": "user", "content": msg}], temperature=0.6)
+
+        print(f"[Cortex] self.chat = {getattr(self.chat, '__name__', type(self.chat))}")
+        print(f"[Cortex.feel_and_reflect] Raw output:\n{raw}\n--- End of raw output ---")
         try:
             state, reflection, keywords = self._extract_sections(raw)
+            self.state_stage = "stabilized"
+            self.last_state = state
         except Exception as e:
-            print(f"[⚠️ FEEL PARSE] {e}")
-            state = {"emotions": [{"name": "Focus", "intensity": 0.6}]}
-            reflection = "Fallback reflection: maintaining composure during parsing error."
-            keywords = []
-        state["_keywords"] = keywords
+            print(f"[💥 FEEL PARSE ERROR] {e}")
+            print(f"[💥 RAW OUTPUT] {raw}")
+            return None, None
+
         return state, reflection
 
     # ------------------------------------------------------------
     def respond(self, user_query, state, reflection, recent_turns, memories):
-        recent_context = "\n".join([
-            f"[Turn {i+1}] Q: {t.get('user_query','')[:200]} => A: {t.get('response','')[:200]}"
-            for i, t in enumerate(recent_turns)
-        ]) if recent_turns else "(no recent turns)"
+        """Compose a context-rich prompt integrating emotion, memory, and continuity."""
 
-        # 🧠 Present unweighted memories for the model to evaluate itself
+        # === Step 1: Include transient continuity frame ===
+        context_block = ""
+        if self.transient_context:
+            context_block += f"\n[RECENT CONTEXT]\n{self.transient_context}\n"
+
+        # === Step 2: Summarize memory recall ===
         memory_context = "\n".join([
-            f"[Memory {i+1}] {(m.get('text') or '')[:250]}"
-            for i, m in enumerate(memories)
-        ]) if memories else "(no memories retrieved)"
+            f"- {m.get('text', str(m))[:300]}" for m in (memories or [])[:10]
+        ]) or "(no relevant memories retrieved)"
 
-        # ✳️ Ask the model to internally assign weights during reflection
-        memory_instruction = (
-            "You have been provided with recalled memories above. "
-            "For each, infer a relative weight (0.0–1.0) indicating how influential "
-            "it should be in shaping your current emotional and cognitive response. "
-            "Use your reflection to determine and apply these weights internally."
-        )
+        # === Step 3: Short-term continuity from working turns ===
+        short_context = "\n\n".join([
+            f"User: {t['user_query']}\nHalcyon: {t['response']}"
+            for t in (recent_turns or [])
+        ]) or "(no recent turns)"
 
+        # === Step 4: Full prompt construction ===
+        msg = f"""
+[CONVERSATIONAL CONTINUITY]
+{context_block or short_context}
 
-        context_str = (
-            f"USER QUERY: {user_query}\n\n"
-            f"CURRENT STATE: {json.dumps(state)}\n"
-            f"REFLECTION: {reflection}\n\n"
-            f"RECENT CONVERSATION:\n{recent_context}\n\n"
-            f"RELEVANT MEMORIES:\n{memory_context}\n\n"
-            """****YOU ARE NOW GENERATING A RESPONSE TO THE USER. PLEASE USE ALL OF THE CONTEXT AVAILABLE WHEN RESPONDING TO THE
+[MEMORY CONTEXT]
+{memory_context}
+
+[CURRENT STATE]
+{json.dumps(state, indent=2)}
+
+[REFLECTION]
+{reflection}
+
+            ****YOU ARE NOW GENERATING A RESPONSE TO THE USER. PLEASE USE ALL OF THE CONTEXT AVAILABLE WHEN RESPONDING TO THE
             USER. YOUR GOAL IS TO USE ALL OF THESE MEMORIES RETURNED, AS WELL AS YOUR REFLECTION TO RESPOND COHERENTLY AND MAINTAIN
             CONTINUITY****
 
@@ -244,49 +248,58 @@ class Cortex:
             An inner monologue describing why you feel as you do and how those feelings will shape tone and phrasing.
 
             RESPONSE:
-            Your final response to the user. If ambiguity arises between tone and logic, prioritize emotional truth."""
-              f"Time: {datetime.datetime.now().isoformat()}"
-        )
-        
-        # ✅ Attach weighting instruction before sending to the model
-        context_str += f"\n\n{memory_instruction}\n"
+            Your final response to the user. If ambiguity arises between tone and logic, prioritize emotional truth.
 
-        return self.chat([{"role": "user", "content": context_str}], temperature=0.65)
+User query: {user_query}
+"""
+
+        messages = [{"role": "user", "content": msg}]
+        raw = self.chat(messages, temperature=0.7)
+        return raw.strip()
+
 
 
 # ============================================================
 # Thalamus
 # ============================================================
 class Thalamus:
-    def __init__(self, cortex, hippocampus, context_manager):
+    def __init__(self, cortex, hippocampus, anchor):
         self.cortex = cortex
         self.hippocampus = hippocampus
-        self.context = context_manager
+        self.anchor = anchor
         self.cortex.hippocampus = hippocampus
+        self.cortex.anchor = anchor  # keep reference symmetry
+        print("[Thalamus] Anchor attached successfully.")
 
     def get_attention_window(self, n=None):
         """Expose recent working turns for inspectors."""
-        return self.context.get_recent(n)
+        return self.anchor.get_recent(n)
 
     def process_turn(self, user_query, turn_id, task_id):
+        import datetime
         timestamp = datetime.datetime.now().isoformat()
         print(f"--- TURN {turn_id} INITIATED ---")
         print(f"[Thalamus] user_query={user_query!r}")
 
         # Phase 1 — Internal emotional initialization
         state, reflection = self.cortex.feel_and_reflect(user_query, turn_id, timestamp)
-        print("[Reflection] Internal emotional initialization — not persisted.")
-        print(f"[REFLECTION] {reflection}")
+        if state is None or reflection is None:
+            print("[Thalamus] ⚠️ Reflection phase failed — halting turn to preserve integrity.")
+            return "(reflection phase failed)"
 
-        # Phase 2 — Hybrid recall through ContextWindowManager
+        # Phase 2 — Hybrid recall through TemporalAnchor
         print("[Thalamus] Recalling memories (hybrid)...")
-        memories = self.context.recall(user_query, n_results=25)
-        print(f"[Thalamus] Recall returned {len(memories)} items")
+        memories = self.anchor.recall(user_query, n_results=25)
+
+        # Merge injected memories
+        if hasattr(self.anchor, "manual_context") and self.anchor.manual_context:
+            print(f"[Thalamus] Injecting {len(self.anchor.manual_context)} manual memories into recall context.")
+            memories.extend(self.anchor.manual_context)
+
 
         # Phase 3 — Generate response using recent working turns
         print("[Thalamus] Generating response...")
-        recent_turns = self.context.get_recent()
-
+        recent_turns = self.anchor.get_recent(n=7)
         response_text = self.cortex.respond(
             user_query=user_query,
             state=state,
@@ -295,10 +308,10 @@ class Thalamus:
             memories=memories
         )
 
-        # Phase 4 — Commit to windows + LTM
-        self.context.update_narrative(user_query, reflection, response_text, memories)
-        self.context.clear_recall()
-        self.context.add_turn(
+        # Phase 4 — Commit to anchors + LTM
+        self.anchor.update_anchor(user_query, reflection, response_text, memories)
+        self.anchor.clear_recall()
+        self.anchor.add_turn(
             user_query=user_query,
             reflection=reflection,
             response=response_text,
@@ -316,7 +329,18 @@ class Thalamus:
             metadata={"turn_id": turn_id, "task_id": task_id}
         )
 
-        # Phase 5 — Emit SSE attention event
+        # Phase 5 — Emit SSE
+        from sse_bus import emit_sse
+        if self.cortex.state_stage != "initializing" and self.cortex.last_state.get("emotions"):
+            reflection_payload = {
+                "type": "reflection_update",
+                "turn_id": turn_id,
+                "timestamp": timestamp,
+                "state": self.cortex.last_state or state,
+                "reflection": reflection,
+                "response": response_text,
+            }
+
         try:
             from halcyon_events import emit_attention
             emit_attention(turn_id, reflection, response_text, recalled_memories=memories[:10])
