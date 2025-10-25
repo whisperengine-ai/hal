@@ -16,6 +16,8 @@ class TemporalAnchor:
         self.anchor_window = []
         self.working_limit = int(working_limit)
         self.anchor_limit = int(anchor_limit)
+        self.anchor_context = []
+        self.manual_injections = []
         print(f"[TemporalAnchor] Initialized :: working={working_limit} anchor={anchor_limit}")
 
     def add_turn(self, user_query, reflection, response, state=None, keywords=None, turn_id=None, task_id=None):
@@ -39,15 +41,22 @@ class TemporalAnchor:
         with self.lock:
             return self.working_window[-(n or self.working_limit):]
 
-    def recall(self, query, n_results=25):
-        long_term = self.hippocampus.recall_with_context(query, n_results) if self.hippocampus else []
-        with self.lock:
-            live = list(self.working_window)
-            self.recall_cache = list(long_term)
-        merged = [{"text": f"[Recent] {t['user_query']} → {t['response']}", "meta": {"src": "working"}, "weight": 1.5} for t in live] + long_term
-        merged.sort(key=lambda x: x.get("weight", 0.0), reverse=True)
-        print(f"[TemporalAnchor] Recall merged :: {len(merged)} entries")
-        return merged
+    def recall(self, query, n_results=10):
+        """Retrieve recent or relevant memories from Hippocampus."""
+        try:
+            if not hasattr(self, "hippocampus") or self.hippocampus is None:
+                print("[TemporalAnchor] ⚠️ No hippocampus linked; skipping recall.")
+                return []
+
+            results = self.hippocampus.recall(query, n_results=n_results)
+            self.recall_cache = results or []
+            print(f"[TemporalAnchor] Recall merged :: {len(self.recall_cache)} entries")
+            return self.recall_cache
+
+        except Exception as e:
+            print(f"[TemporalAnchor] ❌ Recall failed: {e}")
+            self.recall_cache = []
+            return []
 
     def update_anchor(self, user_query, reflection, response, recalled):
         entry = {
@@ -108,3 +117,28 @@ class TemporalAnchor:
         # Optionally preload this into the active recall window
         self.recall_cache = (self.recall_cache or []) + self.manual_context
         print(f"[TemporalAnchor] Total manual memories injected: {len(self.manual_context)}")
+
+    def dump_current(self):
+        """Return both active anchor memories and manual injections."""
+        all_items = []
+        if hasattr(self, "anchor_context"):
+            all_items.extend(self.anchor_context)
+        if hasattr(self, "manual_injections"):
+            all_items.extend(self.manual_injections)
+
+        entries = []
+        for m in all_items:
+            entries.append({
+                "id": m.get("id", ""),
+                "timestamp": m.get("timestamp", ""),
+                "text": (m.get("text", "")[:120] + "...") if m.get("text") else "",
+                "weight": m.get("weight", 1.0),
+                "pinned": m.get("pinned", False),
+                "dream_promoted": m.get("dream_promoted", False),
+                "emotions": m.get("emotions", []),
+                "keywords": m.get("keywords", []),
+            })
+        print(f"[TemporalAnchor] Dumped {len(entries)} anchor + injected memories.")
+        return entries
+
+temporal_anchor = TemporalAnchor()

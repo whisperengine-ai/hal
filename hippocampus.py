@@ -7,6 +7,7 @@ import time
 import uuid
 import os
 import chromadb
+import json
 
 class Hippocampus:
     def __init__(self, cortex):
@@ -20,9 +21,32 @@ class Hippocampus:
 
         print(f"[Hippo.init] Connected to persistent memory at: {memory_path}/episodic_memory")
 
+    # ============================================================
+    # Memory recall + encode stubs
+    # ============================================================
+    def recall(self, query: str, n_results: int = 10):
+        """
+        Minimal recall placeholder.
+        Returns a few dummy entries for now until Chroma or vector recall is wired.
+        """
+        print(f"[Hippocampus] 🔍 recall() requested for query='{query[:50]}' (limit={n_results})")
+        # You can later replace this with a ChromaDB or FAISS lookup.
+        return [
+            {"timestamp": "2025-10-25T00:00:00Z", "memory": "This is a placeholder memory."},
+            {"timestamp": "2025-10-24T23:50:00Z", "memory": "Another sample memory entry."}
+        ]
+
+    def encode(self, turn_data: dict):
+        """
+        Minimal encode placeholder.
+        Logs and appends to an in-memory list for debug visibility.
+        """
+        if not hasattr(self, "_encoded"):
+            self._encoded = []
+        self._encoded.append(turn_data)
+        print(f"[Hippocampus] 💾 Encoded turn {turn_data.get('turn_id')}")
     # ---------------------------
-    # Recall
-    # ---------------------------
+    # Advanced recall with context and diagnostics
     def recall_with_context(self, query, n_results=None):
         """Retrieve semantically relevant memories and print readable diagnostics."""
         import datetime
@@ -94,38 +118,107 @@ class Hippocampus:
     # Commit
     # ---------------------------
     def delayed_commit(self, user_query, reflection, response, state_json, metadata):
-        if time.time() - getattr(self, "last_commit_time", 0) < 3:
-            time.sleep(1.5)
+        """
+        Commits a dual-perspective memory entry:
+        includes user query, internal reflection, model response,
+        emotion parsing, and safe metadata for display + recall.
+        """
+        try:
+            # Gentle throttle to prevent API bursts
+            if time.time() - getattr(self, "last_commit_time", 0) < 3:
+                time.sleep(1.5)
 
-        fused_text = (
-            f"USER QUERY:\n{user_query.strip()}\n\n"
-            f"INTERNAL MONOLOGUE:\n{reflection.strip()}\n\n"
-            f"MODEL RESPONSE:\n{response.strip()}"
-        )
+            # Merge reflections and response text cleanly
+            reflection_text = (reflection or "").strip()
+            response_text = (response or "").strip()
 
-        embedding = self.cortex.embed(fused_text)
-        emotions = state_json.get("emotions", [])
-        keywords = state_json.get("keywords", [])
-        meta = {
-            **(metadata or {}),
-            "timestamp": datetime.datetime.now().isoformat(),
-            "memory_type": "dual_perspective",
-            "reflection": reflection,
-            "summary": f"Fusion of user query + reflection @ {metadata.get('turn_id') if metadata else 'N/A'}",
-        }
+            fused_text = (
+                f"USER QUERY:\n{user_query.strip()}\n\n"
+                f"REFLECTION:\n{reflection_text}\n\n"
+                f"FINAL RESPONSE:\n{response_text}"
+            )
 
-        for i, e in enumerate(emotions[:3]):
-            meta[f"emo_{i+1}_name"] = e.get("name")
-            meta[f"emo_{i+1}_intensity"] = e.get("intensity")
-        for i, kw in enumerate(keywords[:10]):
-            meta[f"keyword_{i+1}"] = kw
+            # Generate embedding
+            embedding = self.cortex.embed(fused_text)
 
-        self.coll.add(
-            ids=[str(uuid.uuid4())],
-            documents=[fused_text],
-            embeddings=[embedding],
-            metadatas=[meta]
-        )
+            # Defensive emotion/keyword parsing
+            if isinstance(state_json, str):
+                try:
+                    state_json = json.loads(state_json)
+                except Exception:
+                    state_json = {}
+            emotions = state_json.get("emotions", [])
+            keywords = state_json.get("keywords", [])
 
-        self.last_commit_time = time.time()
-        print(f"[Hippo.encode] Saved dual-perspective memory with metadata: {meta}")
+            # Base metadata
+            meta = {
+                **(metadata or {}),
+                "timestamp": datetime.datetime.now().isoformat(),
+                "memory_type": "dual_perspective",
+                "reflection": reflection_text,
+                "response_preview": response_text[:256],
+                "summary": f"Fusion of query + reflection @ {metadata.get('turn_id') if metadata else 'N/A'}",
+            }
+
+            # Emotional serialization (safe up to 3)
+            for i, e in enumerate(emotions[:3]):
+                meta[f"emo_{i+1}_name"] = e.get("name")
+                meta[f"emo_{i+1}_intensity"] = float(e.get("intensity") or 0.0)
+
+            # Keyword serialization (safe up to 10)
+            for i, kw in enumerate(keywords[:10]):
+                meta[f"keyword_{i+1}"] = kw
+
+            # Clean weight baseline
+            meta["weight"] = float(meta.get("weight", 1.0) or 1.0)
+
+            # Save memory record
+            self.coll.add(
+                ids=[str(uuid.uuid4())],
+                documents=[fused_text],
+                embeddings=[embedding],
+                metadatas=[meta],
+            )
+
+            self.last_commit_time = time.time()
+            print(f"[Hippo.commit] Saved dual-perspective memory :: {meta.get('summary')}")
+
+        except Exception as e:
+            print(f"[Hippo.commit] Error during commit: {e}")
+
+
+# ============================================================
+#TEMPORAL HELPERS
+# ============================================================
+    def promote_to_core(self, mem_id):
+        """Move a memory to the permanent core collection."""
+        doc = self.coll.get(ids=[mem_id], include=["documents", "metadatas"])
+        core = self.client.get_or_create_collection("core_memory")
+        core.add(ids=doc["ids"], documents=doc["documents"], metadatas=doc["metadatas"])
+        print(f"[Hippo.core] Promoted {mem_id} to core memory")
+
+    def demote_from_core(self, mem_id):
+        """Remove a memory from the core collection."""
+        core = self.client.get_or_create_collection("core_memory")
+        core.delete(ids=[mem_id])
+        print(f"[Hippo.core] Demoted {mem_id}")
+
+    def promote_to_dream(self, mem_id):
+        """Queue a memory for symbolic consolidation."""
+        doc = self.coll.get(ids=[mem_id], include=["documents", "metadatas"])
+        dream = self.client.get_or_create_collection("dream_memory_queue")
+        dream.add(ids=doc["ids"], documents=doc["documents"], metadatas=doc["metadatas"])
+        print(f"[Hippo.dream] Added {mem_id} to dream queue")
+
+    def adjust_weight(self, mem_id, weight):
+        """Adjust stored importance of a memory."""
+        try:
+            mem = self.coll.get(ids=[mem_id], include=["metadatas"])
+            if mem and mem["metadatas"][0]:
+                meta = mem["metadatas"][0]
+                meta["manual_weight"] = weight
+                self.coll.update(ids=[mem_id], metadatas=[meta])
+                print(f"[Hippo.adjust] Set {mem_id} weight={weight}")
+        except Exception as e:
+            print(f"[Hippo.adjust] Error adjusting weight: {e}")
+
