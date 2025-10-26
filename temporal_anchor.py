@@ -48,7 +48,12 @@ class TemporalAnchor:
                 print("[TemporalAnchor] ⚠️ No hippocampus linked; skipping recall.")
                 return []
 
-            results = self.hippocampus.recall_with_context(query, n_results=n_results)
+            if hasattr(self.hippocampus, "recall_with_context"):
+                results = self.hippocampus.recall_with_context(query, n_results=n_results)
+            else:
+                print("[TemporalAnchor] ⚠️ Hippocampus missing recall_with_context; fallback to empty list.")
+                results = []
+
             self.recall_cache = results or []
             print(f"[TemporalAnchor] Recall merged :: {len(self.recall_cache)} entries")
             return self.recall_cache
@@ -58,19 +63,34 @@ class TemporalAnchor:
             self.recall_cache = []
             return []
 
+
     def update_anchor(self, user_query, reflection, response, recalled):
-        entry = {
-            "query": user_query,
-            "reflection": (reflection or "")[:400],
-            "response": (response or "")[:400],
-            "linked": [(m.get("meta") or {}).get("timestamp") for m in (recalled or [])[:5]],
-            "timestamp": datetime.datetime.now().isoformat()
-        }
-        with self.lock:
-            self.anchor_window.append(entry)
-            if len(self.anchor_window) > self.anchor_limit:
-                self.anchor_window.pop(0)
-        print(f"[TemporalAnchor] Anchor updated ({len(self.anchor_window)} entries)")
+        """
+        Update the anchor window with a new summarized entry.
+        Links to recently recalled memories for continuity tracking.
+        """
+        try:
+            entry = {
+                "query": user_query,
+                "reflection": (reflection or "")[:400],
+                "response": (response or "")[:400],
+                "linked": [
+                    (m.get("timestamp") if isinstance(m, dict) else None)
+                    for m in (recalled or [])[:5]
+                ],
+                "timestamp": datetime.datetime.now().isoformat()
+            }
+
+            with self.lock:
+                self.anchor_window.append(entry)
+                if len(self.anchor_window) > self.anchor_limit:
+                    self.anchor_window.pop(0)
+
+            print(f"[TemporalAnchor] Anchor updated ({len(self.anchor_window)} entries)")
+
+        except Exception as e:
+            print(f"[TemporalAnchor] ❌ Error updating anchor: {e}")
+
 
     def build_anchor_frame(self, n_turns=3):
         """Return a text block of recent user/AI exchanges."""
