@@ -48,7 +48,7 @@ class TemporalAnchor:
                 print("[TemporalAnchor] ⚠️ No hippocampus linked; skipping recall.")
                 return []
 
-            results = self.hippocampus.recall(query, n_results=n_results)
+            results = self.hippocampus.recall_with_context(query, n_results=n_results)
             self.recall_cache = results or []
             print(f"[TemporalAnchor] Recall merged :: {len(self.recall_cache)} entries")
             return self.recall_cache

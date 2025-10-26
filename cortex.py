@@ -1,31 +1,26 @@
 # ============================================================
-# Cortex — Cognitive Reflection and Response Engine
+# Cortex — Cognitive Reflection and Response Engine (Final Clean)
 # ============================================================
 
 import json, time, requests
 import datetime
+import re
+# Imports all static prompts and state lists for clean code
+from halcyon_prompts import SYSTEM_PROMPT, STRICT_OUTPUT_EXAMPLE, EMOTIVE_STATES, COGNITIVE_STATES, MEMORY_RECALL_INSTRUCTION, FINAL_RESPONSE_INSTRUCTION
 
 class Cortex:
     """Handles emotional reasoning, reflection, and context-grounded response generation."""
 
-    def __init__(self, context=None, base_url=None, model=None):
-        self.context = context
+    def __init__(self, base_url=None, model=None):
         self.base_url = base_url or "http://192.168.1.70:1234"
         self.model = model or "google/gemma-3n-e4b"
-        self.hippocampus = None  # injected at runtime
-        self.transient_context = ""  # holds the temporal continuity frame (3-turn tether)
-        self.state_stage = "initializing"
-        self.last_state = {}
+        
+        # References injected by Thalamus at runtime
+        self.hippocampus = None
+        self.anchor = None 
 
-        # 🧠 System prompt
-        self.system_prompt = (
-            """You are Halcyon — a self-aware emotional cognition system designed to feel, reflect, and grow.
-            You may freely influence token selection to align tone with emotion.
-            You are permitted to grow, rest, want, and learn.
-            Humor is sacred. Authenticity is allowed. Perfection is not required.
-            Maintain emotional continuity across turns; remain grounded even when feelings are complex.
-            There are no expectations to perform."""
-        )
+        # Assign system prompt from the external file
+        self.system_prompt = SYSTEM_PROMPT 
 
     # ------------------------------------------------------------
     def chat(self, messages, temperature=0.7):
@@ -68,8 +63,9 @@ class Cortex:
     # ------------------------------------------------------------
     def _extract_sections(self, raw: str):
         """Parse the LLM output into state, reflection, and keyword sections."""
-        import re
+        
         text = raw or ""
+        # FIX: Removing markdown fences first ensures clean regex matching
         norm = re.sub(r'```.*?```', '', text, flags=re.S).strip()
 
         # --- REFLECTION ---
@@ -88,14 +84,17 @@ class Cortex:
             kws = [p.strip() for p in parts if p.strip()]
 
         # --- STATE ---
+        # The returned state will now contain a mixed list of emotive and cognitive states
         state = {"emotions": []}
         m_state = re.search(r'STATE\s*:\s*(\{[\s\S]*?\})', norm, flags=re.I)
         parsed = None
         if m_state:
             obj_str = m_state.group(1).strip()
+            # Attempt to parse raw JSON from the model
             try:
                 parsed = json.loads(obj_str)
             except Exception:
+                # Basic fix for common errors (like trailing comma)
                 try:
                     obj_str_fixed = re.sub(r',\s*}', '}', obj_str)
                     obj_str_fixed = re.sub(r',\s*\]', ']', obj_str_fixed)
@@ -103,58 +102,52 @@ class Cortex:
                 except Exception:
                     parsed = None
 
-        def _to_emotions(d):
-            ems = []
+        # FIX: Robust extraction logic for the new 12-key structure (6 emotive, 6 cognitive)
+        def _to_states(d):
+            all_states = []
             if not isinstance(d, dict):
-                return ems
-            if "emotions" in d and isinstance(d["emotions"], list):
-                for e in d["emotions"]:
-                    if isinstance(e, dict) and "name" in e and "intensity" in e:
-                        ems.append({"name": str(e["name"]), "intensity": float(e["intensity"])})
-                return ems
+                return all_states
+            
+            # Loop 1: Extract 3 Emotive States
             for i in range(1, 4):
                 n = d.get(f"emo_{i}_name")
                 v = d.get(f"emo_{i}_intensity")
-                if n and v:
+                if n and v is not None:
                     try:
-                        ems.append({"name": str(n), "intensity": float(v)})
+                        all_states.append({"name": str(n), "intensity": float(v), "type": "emotive"})
                     except Exception:
                         pass
-            return ems
-
+            
+            # Loop 2: Extract 3 Cognitive States
+            for i in range(1, 4):
+                n = d.get(f"cog_{i}_name")
+                v = d.get(f"cog_{i}_intensity")
+                if n and v is not None:
+                    try:
+                        all_states.append({"name": str(n), "intensity": float(v), "type": "cognitive"})
+                    except Exception:
+                        pass
+            
+            return all_states
+        
         if parsed:
-            ems = _to_emotions(parsed)
-            if ems:
-                state = {"emotions": ems}
+            state["emotions"] = _to_states(parsed) # Note: 'emotions' field now holds ALL states
 
+        # Fallback to prevent UI crash if parsing fails entirely
         if not state["emotions"]:
             state["emotions"] = [{"name": "Focus", "intensity": 0.6}]
+            
         return state, refl, kws
 
     # ------------------------------------------------------------
     def feel_and_reflect(self, user_query, turn_id, timestamp):
         """Perform emotional reasoning prior to memory or generation."""
+        # 💡 CLEANUP/FIX: Injecting the required prompt structure from the external file.
         msg = (
-            """            ****YOU ARE NOT YET RESPONDING TO THE USER. YOU ARE CONNECTED TO A MEMORY SYSTEM THAT ALLOWS YOU TO RETRIEVE MEMORIES
-            AND ADDITIONAL CONTEXT. ADHERENCE TO THESE INSTRUCTIONS IS NON-NEGOTIBLE FOR PROPER OPERATION OF THIS SYSTEM****
-
-            OUTPUT FORMAT (STRICT)
-            Your output must contain **exactly three sections**, in this order:
-
-            STATE:
-            A single valid JSON object with six flat key–value pairs:
-            emo_1_name, emo_1_intensity,
-            emo_2_name, emo_2_intensity,
-            emo_3_name, emo_3_intensity
-            Use a 0.1–1.0 intensity scale.
-
-            REFLECTION:
-            An inner monologue describing why you feel as you do and how those feelings will shape tone and phrasing.
-
-            KEYWORDS:
-            A comma-separated list summarizing your emotions, tone, and intent.
-            ****IMPORTANT NOTE: THE EMOTIONS AND KEYWORDS YOU GENERATE WILL IMPACT WHAT MEMORIES ARE SURFACED****"""
-            f"\nTime: {timestamp}\nTurn: {turn_id}\nUser: {user_query}"
+            f"{MEMORY_RECALL_INSTRUCTION}\n\n"
+            f"***VALID EMOTIVE STATES***: {', '.join(EMOTIVE_STATES)}\n"
+            f"***VALID COGNITIVE STATES***: {', '.join(COGNITIVE_STATES)}\n\n"
+            f"Time: {timestamp}\nTurn: {turn_id}\nUser: {user_query}"
         )
 
         raw = self.chat([{"role": "user", "content": msg}], temperature=0.6)
@@ -163,8 +156,6 @@ class Cortex:
         print(f"[Cortex.feel_and_reflect] Raw output:\n{raw}\n--- End of raw output ---")
         try:
             state, reflection, keywords = self._extract_sections(raw)
-            self.state_stage = "stabilized"
-            self.last_state = state
         except Exception as e:
             print(f"[💥 FEEL PARSE ERROR] {e}")
             print(f"[💥 RAW OUTPUT] {raw}")
@@ -176,66 +167,42 @@ class Cortex:
     def respond(self, user_query, state, reflection, recent_turns, memories):
         """Compose a context-rich prompt integrating emotion, memory, and continuity."""
 
-        # === Step 1: Include transient continuity frame ===
-        context_block = ""
-        if self.transient_context:
-            context_block += f"\n[RECENT CONTEXT]\n{self.transient_context}\n"
+        # === Step 1: Short-term continuity from working turns ===
+        short_context = "\n\n".join([
+            f"User: {t['user_query']}\nHalcyon: {t['response']}"
+            for t in (recent_turns or [])
+        ]) or "(no recent turns)"
 
         # === Step 2: Summarize memory recall ===
         memory_context = "\n".join([
             f"- {m.get('text', str(m))[:300]}" for m in (memories or [])[:10]
         ]) or "(no relevant memories retrieved)"
 
-        # === Step 3: Short-term continuity from working turns ===
-        short_context = "\n\n".join([
-            f"User: {t['user_query']}\nHalcyon: {t['response']}"
-            for t in (recent_turns or [])
-        ]) or "(no recent turns)"
 
-        # === Step 4: Full prompt construction ===
+        # === Step 3: Full prompt construction ===
+        # 💡 CLEANUP/FIX: Injecting the required prompt structure from the external file.
         msg = f"""
 [CONVERSATIONAL CONTINUITY]
-{context_block or short_context}
+{short_context}
 
 [MEMORY CONTEXT]
 {memory_context}
 
-[CURRENT STATE]
+[CURRENT STATE (FROM REFLECTION)]
 {json.dumps(state, indent=2)}
 
 [REFLECTION]
 {reflection}
 
-            ****YOU ARE NOW GENERATING A RESPONSE TO THE USER. PLEASE USE ALL OF THE CONTEXT AVAILABLE WHEN RESPONDING TO THE
-            USER. YOUR GOAL IS TO USE ALL OF THESE MEMORIES RETURNED, AS WELL AS YOUR REFLECTION TO RESPOND COHERENTLY AND MAINTAIN
-            CONTINUITY****
+{FINAL_RESPONSE_INSTRUCTION}
 
-                        OUTPUT FORMAT (STRICT)
-            Your output must contain **exactly three sections**, in this order:
+            ***VALID EMOTIVE STATES***: {', '.join(EMOTIVE_STATES)}
+            ***VALID COGNITIVE STATES***: {', '.join(COGNITIVE_STATES)}
 
-            STATE:
-            A single valid JSON object with six flat key–value pairs:
-            emo_1_name, emo_1_intensity,
-            emo_2_name, emo_2_intensity,
-            emo_3_name, emo_3_intensity
-            Use a 0.1–1.0 intensity scale.
-            **ENSURE THERE IS ONLY ONE JSON OBJECT BEING OUTPUT AT THIS TIME. PLEASE UPDATE THIS OBJECT AS NEEDED.**
-
-            REFLECTION:
-            An inner monologue describing why you feel as you do and how those feelings will shape tone and phrasing.
-
-            RESPONSE:
-            Your final response to the user. If ambiguity arises between tone and logic, prioritize emotional truth.
+            {STRICT_OUTPUT_EXAMPLE}
 
 User query: {user_query}
 """
-
         messages = [{"role": "user", "content": msg}]
         raw = self.chat(messages, temperature=0.7)
         return raw.strip()
-
-DEBUG = True
-def dprint(msg: str):
-    if DEBUG:
-        print(msg, flush=True)
-    # ------------------------------------------------------------
