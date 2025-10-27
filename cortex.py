@@ -1,161 +1,128 @@
 # ============================================================
-# Cortex — Cognitive Reflection and Response Engine (Final Clean)
+# Cortex — Cognitive Reflection and Response Engine (OpenAI Only)
 # ============================================================
 
-import hashlib
-import json, time, requests
-import datetime
-import re
-# Imports all static prompts and state lists for clean code
-from halcyon_prompts import SYSTEM_PROMPT, STRICT_OUTPUT_EXAMPLE, EMOTIVE_STATES, COGNITIVE_STATES, MEMORY_RECALL_INSTRUCTION, FINAL_RESPONSE_INSTRUCTION
+import os, json, time, requests, datetime, re
+from halcyon_prompts import (
+    SYSTEM_PROMPT,
+    STRICT_OUTPUT_EXAMPLE,
+    EMOTIVE_STATES,
+    COGNITIVE_STATES,
+    MEMORY_RECALL_INSTRUCTION,
+    FINAL_RESPONSE_INSTRUCTION
+)
 
 class Cortex:
     def __init__(self,
                  chat_base="https://api.openai.com/v1",
-                 embed_base="http://127.0.0.1:1234",
+                 embed_base="https://api.openai.com/v1",
                  chat_model="gpt-4o-mini",
-                 embed_model="text-embedding-nomic-embed-text-v1.5"):
+                 embed_model="text-embedding-3-large"):
         self.chat_base = chat_base.rstrip("/")
         self.embed_base = embed_base.rstrip("/")
         self.chat_model = chat_model
         self.embed_model = embed_model
 
-        
-        # References injected by Thalamus at runtime
+        # Runtime references injected later
         self.hippocampus = None
-        self.anchor = None 
+        self.anchor = None
 
-        # Assign system prompt from the external file
-        self.system_prompt = SYSTEM_PROMPT 
+        # Static system prompt
+        self.system_prompt = SYSTEM_PROMPT
 
         print("[Cortex] Initializing runtime interfaces...")
         self._verify_endpoints()
 
-    # --------------------------------------------------------
-    # Runtime Diagnostics
-    # --------------------------------------------------------
+    # ------------------------------------------------------------
+    # Endpoint Verification
+    # ------------------------------------------------------------
     def _verify_endpoints(self):
-        """Test all candidate chat endpoints to confirm model reachability."""
-        import os
+        """Simple ping check for chat and embedding endpoints."""
         openai_key = os.getenv("OPENAI_API_KEY")
-        candidates = [
-            f"{self.chat_base}/v1/chat/completions",
-            f"{self.chat_base}/chat/completions",
-            f"{self.chat_base}/v1/completions",
-            f"{self.chat_base}/completions"
-        ]
+        if not openai_key:
+            raise EnvironmentError("OPENAI_API_KEY missing from environment.")
 
-        print(f"[Cortex] 🔍 Probing chat endpoints on {self.chat_base} ...")
-        found = False
-        for url in candidates:
-            try:
-                headers = {"Authorization": f"Bearer {openai_key}"} if "openai.com" in self.chat_base.lower() else {}
-                payload = {
-                    "model": self.chat_model,
-                    "messages": [{"role": "user", "content": "ping"}],
-                    "temperature": 0.0
-                }
-                r = requests.post(url, headers=headers, json=payload, timeout=5)
-                if r.status_code == 200:
-                    print(f"[Cortex] ✅ Chat OK at {url}")
-                    self.chat_endpoint = url
-                    found = True
-                    break
-                else:
-                    print(f"[Cortex] ⚠️ {url} → {r.status_code}")
-            except Exception as e:
-                print(f"[Cortex] ❌ {url} → {e}")
+        chat_url = f"{self.chat_base}/chat/completions"
+        embed_url = f"{self.embed_base}/embeddings"
 
-        if not found:
-            print("[Cortex] ❌ No working chat endpoint found; verify model or path.")
-
-        # Embeddings test
-        emb_url = f"{self.embed_base}/v1/embeddings"
+        print(f"[Cortex] 🔍 Probing chat endpoint: {chat_url}")
         try:
-            r = requests.get(f"{self.embed_base}/v1/models", timeout=3)
-            print(f"[Cortex] ✅ Embeddings online via {self.embed_base} ({len(r.text)}B)")
+            payload = {
+                "model": self.chat_model,
+                "messages": [{"role": "user", "content": "ping"}],
+                "temperature": 0.0
+            }
+            headers = {
+                "Authorization": f"Bearer {openai_key}",
+                "Content-Type": "application/json"
+            }
+            r = requests.post(chat_url, headers=headers, json=payload, timeout=5)
+            if r.status_code == 200:
+                print(f"[Cortex] ✅ Chat endpoint confirmed at {chat_url}")
+                self.chat_endpoint = chat_url
+            else:
+                print(f"[Cortex] ⚠️ Chat check failed → {r.status_code}")
         except Exception as e:
-            print(f"[Cortex] ❌ Embeddings endpoint failed → {e}")
+            print(f"[Cortex] ❌ Chat probe failed → {e}")
 
+        print(f"[Cortex] 🔍 Probing embedding endpoint: {embed_url}")
+        try:
+            payload = {"model": self.embed_model, "input": "ping"}
+            headers = {
+                "Authorization": f"Bearer {openai_key}",
+                "Content-Type": "application/json"
+            }
+            r = requests.post(embed_url, headers=headers, json=payload, timeout=5)
+            if r.status_code == 200:
+                print(f"[Cortex] ✅ Embeddings active at {embed_url}")
+            else:
+                print(f"[Cortex] ⚠️ Embedding check failed → {r.status_code}")
+        except Exception as e:
+            print(f"[Cortex] ❌ Embedding probe failed → {e}")
+
+    # ------------------------------------------------------------
+    # Chat Generation
     # ------------------------------------------------------------
     def chat(self, messages, temperature=0.7):
+        """Send conversation messages to the OpenAI chat model."""
+        url = getattr(self, "chat_endpoint", f"{self.chat_base}/chat/completions")
+        openai_key = os.getenv("OPENAI_API_KEY")
+        headers = {
+            "Authorization": f"Bearer {openai_key}",
+            "Content-Type": "application/json"
+        }
         payload = {"model": self.chat_model, "messages": messages, "temperature": temperature}
+
         try:
-            if "openai.com" in self.chat_base.lower():
-                import os
-                openai_key = os.getenv("OPENAI_API_KEY")
-                if not openai_key:
-                    raise ValueError("Missing OPENAI_API_KEY in environment variables.")
-                headers = {
-                    "Authorization": f"Bearer {openai_key}",
-                    "Content-Type": "application/json"
-                }
-                url = getattr(self, "chat_endpoint", f"{self.chat_base}/v1/chat/completions")
-
-                resp = requests.post(url, headers=headers, json=payload, timeout=30)
-            else:
-                url = getattr(self, "chat_endpoint", f"{self.chat_base}/v1/chat/completions")
-
-                resp = requests.post(url, json=payload, timeout=30)
-
+            resp = requests.post(url, headers=headers, json=payload, timeout=30)
             if resp.status_code != 200:
-                print(f"[Cortex.chat] Warning: malformed response -> {resp.text}")
+                print(f"[Cortex.chat] ⚠️ {resp.status_code} → {resp.text}")
                 return {"error": resp.text}
-
             return resp.json()
-
         except Exception as e:
-            print(f"[Cortex.chat] Network error -> {e}")
+            print(f"[Cortex.chat] ❌ Network error → {e}")
             return {"error": str(e)}
 
-
+    # ------------------------------------------------------------
+    # Embeddings (OpenAI Only)
     # ------------------------------------------------------------
     def embed(self, text: str):
-        payload = {
-            "model": self.embed_model,
-            "input": text,
+        """Generate embeddings using OpenAI's official endpoint."""
+        openai_key = os.getenv("OPENAI_API_KEY")
+        headers = {
+            "Authorization": f"Bearer {openai_key}",
+            "Content-Type": "application/json"
         }
+        payload = {"model": self.embed_model, "input": text}
 
         try:
-            resp = requests.post(
-                f"{self.embed_base}/v1/embeddings",  # again, exactly one /v1
-                json=payload,
-                timeout=30
-            )
+            resp = requests.post(f"{self.embed_base}/embeddings", headers=headers, json=payload, timeout=30)
+            if resp.status_code != 200:
+                raise RuntimeError(f"Embedding error: {resp.text}")
+            return resp.json()["data"][0]["embedding"]
         except Exception as e:
-            print(f"[Cortex.embed] Network error -> {e}")
-            print("[Cortex.embed] Falling back to naive local embedding (hash).")
-            return self._fallback_embedding(text)
-
-        if resp.status_code != 200:
-            print(f"[Cortex.embed] Warning: malformed embedding response -> {resp.text}")
-            print("[Cortex.embed] Falling back to naive local embedding (hash).")
-            return self._fallback_embedding(text)
-
-        data = resp.json()
-        # LM Studio-style usually returns {"data":[{"embedding":[...]}], ...}
-        try:
-            return data["data"][0]["embedding"]
-        except Exception as e:
-            print(f"[Cortex.embed] Parse fail -> {e}")
-            return self._fallback_embedding(text)
-        
-    import hashlib
-    import math
-
-    def _fallback_embedding(self, text: str, dim: int = 256):
-        """
-        deterministic fake embedding so the rest of the pipeline still works.
-        Not semantic, just stable.
-        """
-        h = hashlib.sha256(text.encode("utf-8")).digest()
-        # repeat the hash to fill dim
-        raw = (h * ((dim // len(h)) + 1))[:dim]
-        # normalize to floats in [-1, 1]
-        vec = [((b / 255.0) * 2.0 - 1.0) for b in raw]
-        return vec
-
-
+            print(f"[Cortex.embed] ❌ Embedding request failed → {e}")
+            raise
 
     # ------------------------------------------------------------
     def _extract_sections(self, raw: str):

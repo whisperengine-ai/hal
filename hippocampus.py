@@ -1,103 +1,104 @@
 # ============================================================
-# hippocampus.py — Halcyon Episodic + Short-Term Memory Core
+# hippocampus.py — Halcyon Qdrant Core (Final Version)
 # ============================================================
 
 import datetime
 import time
 import uuid
 import os
-import chromadb
 import json
 import hashlib
 
+# 💡 QDRANT IMPORTS
+from qdrant_client import QdrantClient, models 
+# Removed: import chromadb
 
 class Hippocampus:
     def __init__(self, cortex):
         self.cortex = cortex
         self.last_commit_time = 0
 
-        # persistent store
-        memory_path = os.path.abspath("./memory_journals/halcyon_persistent")
-        os.makedirs(memory_path, exist_ok=True)
+        # --- QDRANT CLIENT SETUP ---
+        # Connect to the local Docker container
+        self.client = QdrantClient(host="localhost", port=6333)
 
-        self.client = chromadb.PersistentClient(path=memory_path)
+        self.episodic_collection_name = "episodic_memory"
+        self.short_collection_name = "short_term_memory"
+        
+        VECTOR_SIZE = 3072 
+        try:
+            self.client.get_collection(self.episodic_collection_name)
+        except:
+            # Collection doesn't exist, create it
+            self.client.create_collection(
+                collection_name=self.episodic_collection_name,
+                vectors_config=models.VectorParams(size=3072, distance=models.Distance.COSINE)
+            )
 
-        # long-term episodic memory (stable, weighted, emotional, etc)
-        self.coll = self.client.get_or_create_collection("episodic_memory")
+        try:
+            self.client.get_collection(self.short_collection_name)
+        except:
+            self.client.create_collection(
+                collection_name=self.short_collection_name,
+                vectors_config=models.VectorParams(size=3072, distance=models.Distance.DOT)
+            )
 
-        # short-term scratch (per-turn echo, transient-ish)
-        self.short_coll = self.client.get_or_create_collection("short_term_memory")
-
-        self.MAX_MEMORIES = 25
-
-        print(f"[Hippo.init] Connected to persistent memory at: {memory_path}")
-        print("  - episodic_memory")
-        print("  - short_term_memory")
+        print("[Hippo.init] ✅ Connected to Qdrant and dual collections verified.")
 
     # --------------------------------------------------------
     # INTERNAL: build a deterministic id for a fused memory
     # --------------------------------------------------------
     def _stable_id_for_fused_text(self, fused_text: str) -> str:
-        """Return a deterministic hash id for the fused_text."""
-        return hashlib.sha1(fused_text.encode("utf-8")).hexdigest()
+        """
+        Return a deterministic UUID for a given fused_text.
+        This ensures identical input always maps to the same Qdrant point ID.
+        """
+        import uuid, hashlib
+        digest = hashlib.sha1(fused_text.encode("utf-8")).digest()
+        # Take the first 16 bytes (128 bits) and cast to a valid UUID format
+        return str(uuid.UUID(bytes=digest[:16]))
+
 
     # --------------------------------------------------------
-    # INTERNAL: dedupe list of memory dicts (merge short+long)
-    # key = text body
+    # INTERNAL: dedupe list of memory dicts
     # --------------------------------------------------------
     def _dedupe_memories(self, memories):
         unique = {}
         for m in memories:
             key = m["text"].strip()
-            # keep the higher-weight version if same text appears twice
             if key not in unique or m["weight"] > unique[key]["weight"]:
                 unique[key] = m
         return list(unique.values())
 
     # ============================================================
-    # recall_with_context
+    # recall_with_context (Qdrant Search)
     # ============================================================
     def recall_with_context(self, query, n_results=None):
-        """
-        Retrieve semantically relevant memories from BOTH
-        short_term_memory and episodic_memory, merge them,
-        annotate with decay/weight, and print diagnostics.
-        """
-        n_results = n_results or self.MAX_MEMORIES
+        n_results = n_results or getattr(self, "MAX_MEMORIES", 25)
         now = datetime.datetime.now()
-
-        # embed the query once
         query_vec = self.cortex.embed(query)
 
-        # --- query episodic (long-term)
-        epi_results = self.coll.query(
-            query_embeddings=[query_vec],
-            n_results=n_results,
-            include=["documents", "metadatas", "distances"]
-        )
+        def qdrant_search(collection_name, vector):
+            return self.client.search(
+                collection_name=collection_name,
+                query_vector=vector,
+                limit=n_results,
+                with_payload=True,
+                with_vectors=False
+            )
 
-        # --- query short-term
-        st_results = self.short_coll.query(
-            query_embeddings=[query_vec],
-            n_results=n_results,
-            include=["documents", "metadatas", "distances"]
-        )
+        epi_results = qdrant_search(self.episodic_collection_name, query_vec)
+        st_results = qdrant_search(self.short_collection_name, query_vec)
 
         merged_rows = []
 
-        # helper to process results from a given source
         def harvest(results, source_label):
-            if not results or not results.get("documents"):
-                return
-            docs = results["documents"][0]
-            metas = results["metadatas"][0]
-            dists = results["distances"][0]
-
-            for i, doc in enumerate(docs):
-                meta = metas[i] if i < len(metas) else {}
-                dist = dists[i] if i < len(dists) else 1.0
-
+            for point in results:
+                distance = 1.0 - point.score
+                meta = point.payload or {}
+                mem_id = point.id
                 ts_str = meta.get("timestamp")
+
                 try:
                     ts = datetime.datetime.fromisoformat(ts_str)
                     age_days = (now - ts).total_seconds() / 86400.0
@@ -107,18 +108,17 @@ class Hippocampus:
                     decay = 1.0
 
                 manual_weight = meta.get("manual_weight", 1.0)
-                base_weight = (manual_weight * (1.5 - dist)) * decay
+                base_weight = (manual_weight * (1.5 - distance)) * decay
                 reinforced_decay = min(1.0, decay * 1.05)
 
-                # rehearsal count++
                 meta["rehearsal_count"] = meta.get("rehearsal_count", 0) + 1
-                # NOTE: we are not writing that increment back to DB yet. TODO optional.
 
                 merged_rows.append({
-                    "text": doc,
+                    "id": mem_id,
+                    "text": meta.get("fused_text", "Text Unavailable"),
                     "weight": base_weight,
                     "timestamp": ts_str,
-                    "distance": dist,
+                    "distance": distance,
                     "decay": reinforced_decay,
                     "age_days": age_days,
                     "source": source_label,
@@ -127,87 +127,42 @@ class Hippocampus:
         harvest(epi_results, "episodic")
         harvest(st_results, "short_term")
 
-        # dedupe merged_rows by text to kill near-identical duplicates
         merged_rows = self._dedupe_memories(merged_rows)
-
-        # sort by weight desc, take top N
         merged_rows.sort(key=lambda m: m["weight"], reverse=True)
         merged_rows = merged_rows[:n_results]
 
-        # ---- pretty diagnostics print ----
-        header = (
-            f"\n[Hippo.recall] ───── Memory Diagnostics ({now.strftime('%Y-%m-%d %H:%M:%S')}) ─────"
-            "\n IDX | DECAY | WEIGHT | DIST  | AGE(d) | SRC    | TEXT PREVIEW"
-            "\n──────────────────────────────────────────────────────────────────────"
-        )
-        print(header)
-        for idx, mem in enumerate(merged_rows, start=1):
-            snippet = mem["text"][:60].replace("\n", " ").replace("\r", " ")
-            print(
-                f"{idx:>4d} | "
-                f"{mem['decay']:>5.3f} | "
-                f"{mem['weight']:>6.3f} | "
-                f"{mem['distance']:>5.3f} | "
-                f"{mem['age_days']:>6.2f} | "
-                f"{mem['source'][:7]:<7} | "
-                f"{snippet}..."
-            )
+        print(f"\n[Hippo.recall] ✅ Retrieved {len(merged_rows)} unique memories (weighted + decayed).")
 
-        print(f"[Hippo.recall] ✅ Retrieved {len(merged_rows)} unique memories (weighted + decayed).")
+        if not merged_rows:
+            print("[Hippo.recall] (no matches found)\n")
+            return merged_rows
+
+        print("─────────────────────────────────────────────")
+        print(f"{'Source':<12} | {'ID':<8} | {'Weight':<7} | {'Decay':<5} | {'Age(d)':<6} | Text Snippet")
+        print("─────────────────────────────────────────────")
+        for m in merged_rows:
+            snippet = (m['text'] or '')[:60].replace("\n", " ")
+            print(f"{m['source']:<12} | {str(m['id'])[:8]} | {m['weight']:<7.3f} | {m['decay']:<5.2f} | {m['age_days']:<6.2f} | {snippet}")
+        print("─────────────────────────────────────────────\n")
 
         return merged_rows
+
 
     # ============================================================
     # encode (short-term capture)
     # ============================================================
     def encode(self, turn_data):
-        """
-        Capture a volatile 'in the moment' snapshot of this turn.
-        Goes ONLY into short_term_memory.
-        """
-        try:
-            doc = (
-                f"USER QUERY:\n{turn_data.get('user_query', '')}\n\n"
-                f"REFLECTION:\n{turn_data.get('reflection', '')}\n\n"
-                f"RESPONSE:\n{turn_data.get('response', '')}"
-            )
-            emb = self.cortex.embed(doc)
+        """Short-term encode not used in this model version."""
+        pass
 
-            meta = {
-                "timestamp": datetime.datetime.now().isoformat(),
-                "memory_type": "short_term",
-                "turn_id": turn_data.get("turn_id"),
-                "task_id": turn_data.get("task_id"),
-                # short-term sits lighter in weighting
-                "manual_weight": 0.5,
-                "rehearsal_count": 0,
-            }
-
-            self.short_coll.add(
-                ids=[str(uuid.uuid4())],
-                documents=[doc],
-                embeddings=[emb],
-                metadatas=[meta],
-            )
-
-            print(f"[Hippo.encode] 🧩 Short-term memory encoded (turn {turn_data.get('turn_id')})")
-
-        except Exception as e:
-            print(f"[Hippo.encode] ❌ Error encoding short-term memory: {e}")
 
     # ============================================================
     # delayed_commit (long-term episodic)
     # ============================================================
     def delayed_commit(self, user_query, reflection, response, state_json, metadata):
-        """
-        Commit durable episodic memory with emotional + cognitive state.
-        We:
-        - fuse query/reflection/response
-        - build deterministic id
-        - skip if already stored
-        """
+        """Commit durable episodic memory with emotional + cognitive state using OpenAI embeddings."""
         try:
-            # gentle throttle (prevents hammering embeddings vendor etc.)
+            # Prevent rapid-fire commits
             if time.time() - getattr(self, "last_commit_time", 0) < 3:
                 time.sleep(1.5)
 
@@ -220,29 +175,30 @@ class Hippocampus:
                 f"FINAL RESPONSE:\n{response_text}"
             )
 
-            # deterministic ID for dedupe
             mem_id = self._stable_id_for_fused_text(fused_text)
 
-            # check if this fused memory is already in episodic_memory
-            existing = self.coll.get(ids=[mem_id], include=["metadatas"])
-            if existing and existing.get("metadatas"):
-                print(f"[Hippo.commit] 🔁 Duplicate memory {mem_id[:8]}... detected — skipping add.")
-                self.last_commit_time = time.time()
-                return
+            # --- EXISTENCE CHECK ---
+            try:
+                existing = self.client.retrieve(
+                    collection_name=self.episodic_collection_name,
+                    ids=[mem_id],  # Correct param for current Qdrant client
+                    with_payload=False,
+                    with_vectors=False
+                )
+                if existing and len(existing) > 0:
+                    print(f"[Hippo.commit] 🔁 Duplicate memory {mem_id[:8]}... detected — skipping add.")
+                    self.last_commit_time = time.time()
+                    return
+            except Exception:
+                # Fail-safe: if retrieve check fails, continue safely
+                existing = []
 
-            # embed once
+            # --- EMBEDDING ---
             embedding = self.cortex.embed(fused_text)
+            if not embedding:
+                raise RuntimeError("Cortex.embed() returned no data.")
 
-            # make sure state_json is dict-ish
-            if isinstance(state_json, str):
-                try:
-                    state_json = json.loads(state_json)
-                except Exception:
-                    state_json = {}
-
-            all_states = state_json.get("emotions", [])
-            keywords = (metadata or {}).get("keywords", [])
-
+            # --- METADATA (PAYLOAD) ---
             meta = {
                 **(metadata or {}),
                 "timestamp": datetime.datetime.now().isoformat(),
@@ -250,11 +206,12 @@ class Hippocampus:
                 "reflection": reflection_text,
                 "response_preview": response_text[:256],
                 "summary": f"Fusion of query + reflection @ {metadata.get('turn_id') if metadata else 'N/A'}",
-                "manual_weight": 1.0,   # episodic baseline
+                "manual_weight": 1.0,
                 "rehearsal_count": 0,
+                "fused_text": fused_text
             }
 
-            # serialize top 3 emotive + top 3 cognitive
+            all_states = state_json.get("emotions", [])
             emotive_count = 0
             cognitive_count = 0
             for state in all_states:
@@ -268,42 +225,43 @@ class Hippocampus:
                     meta[f"cog_{cognitive_count+1}_intensity"] = float(state.get("intensity") or 0.0)
                     cognitive_count += 1
 
-            # keywords -> keyword_1 ... keyword_10
-            for i, kw in enumerate(keywords[:10]):
+            for i, kw in enumerate((metadata or {}).get("keywords", [])[:10]):
                 meta[f"keyword_{i+1}"] = kw
 
-            # write episodic memory with stable ID
-            self.coll.add(
-                ids=[mem_id],
-                documents=[fused_text],
-                embeddings=[embedding],
-                metadatas=[meta],
+            # --- UPSERT (WRITE) ---
+            self.client.upsert(
+                collection_name=self.episodic_collection_name,
+                points=models.Batch(
+                    ids=[mem_id],
+                    vectors=[embedding],
+                    payloads=[meta]
+                )
             )
 
+
             self.last_commit_time = time.time()
-            print(f"[Hippo.commit] Saved dual-perspective memory :: {meta.get('summary')} ({mem_id[:8]}...)")
+            print(f"[Hippo.commit] ✅ Saved episodic memory :: {meta.get('summary')} ({mem_id[:8]}...)")
 
         except Exception as e:
-            print(f"[Hippo.commit] Error during commit: {e}")
+            print(f"[Hippo.commit] ❌ Error during commit: {e}")
+            import traceback; traceback.print_exc()
 
     # ============================================================
     # adjust_weight (manual tuning / pinning)
     # ============================================================
     def adjust_weight(self, mem_id, weight):
-        """
-        Raise or lower importance of a specific episodic memory.
-        We mutate manual_weight in episodic_memory only.
-        """
+        """Mutate manual_weight in episodic_memory only (Qdrant)."""
         try:
-            mem = self.coll.get(ids=[mem_id], include=["metadatas"])
-            if mem and mem.get("metadatas") and mem["metadatas"][0]:
-                meta = mem["metadatas"][0]
-                meta["manual_weight"] = max(1.0, float(weight))
-                self.coll.update(ids=[mem_id], metadatas=[meta])
-                print(f"[Hippo.adjust] Set {mem_id[:8]}... manual_weight={weight}")
-            else:
-                print(f"[Hippo.adjust] Error: Memory ID {mem_id[:8]}... not found.")
+            new_weight = max(1.0, float(weight))
+            
+            # Qdrant uses set_payload to update specific metadata fields (manual_weight)
+            self.client.set_payload(
+                collection_name=self.episodic_collection_name,
+                payload={"manual_weight": new_weight},
+                points=[mem_id],
+            ).result()
+            
+            print(f"[Hippo.adjust] Set {mem_id[:8]}... manual_weight={new_weight}")
         except Exception as e:
             print(f"[Hippo.adjust] Error adjusting weight: {e}")
 # ============================================================
-# End of hippocampus.py
