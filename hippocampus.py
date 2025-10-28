@@ -265,3 +265,45 @@ class Hippocampus:
         except Exception as e:
             print(f"[Hippo.adjust] Error adjusting weight: {e}")
 # ============================================================
+# get recent turns
+# ============================================================
+    def get_recent_turns(self, n=3):
+        """Fetch the most recent N conversational turns from log files, pulling from previous day if today's count is insufficient."""
+        from glob import glob
+        from datetime import datetime, timedelta
+
+        def load_turns_from_dir(log_dir):
+            turns = []
+            log_path = os.path.join(log_dir, "turn_log.jsonl")
+            if os.path.exists(log_path):
+                try:
+                    with open(log_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            try:
+                                turns.append(json.loads(line.strip()))
+                            except Exception:
+                                continue
+                except Exception as e:
+                    print(f"[Hippocampus] ⚠️ Error reading {log_path}: {e}")
+            return turns
+
+        try:
+            today = datetime.today().date()
+            yesterday = today - timedelta(days=1)
+
+            today_dir = os.path.join("runtime_logs", today.isoformat())
+            yest_dir = os.path.join("runtime_logs", yesterday.isoformat())
+
+            all_turns = load_turns_from_dir(today_dir)
+
+            if len(all_turns) < n:
+                needed = n - len(all_turns)
+                yest_turns = load_turns_from_dir(yest_dir)
+                all_turns.extend(yest_turns[::-1][:needed])  # Grab most recent first from yesterday
+
+            # Sort and return only the most recent N
+            return sorted(all_turns, key=lambda x: x.get("timestamp", ""), reverse=True)[:n]
+
+        except Exception as e:
+            print(f"[Hippocampus] ⚠️ Failed to fetch recent turns: {e}")
+            return []

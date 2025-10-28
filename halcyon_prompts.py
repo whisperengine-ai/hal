@@ -80,7 +80,7 @@ FINAL_RESPONSE_INSTRUCTION = """
             CONTINUITY****
 
                         OUTPUT FORMAT (STRICT)
-            Your output must contain **exactly three sections**, in this order:
+            Your output must contain **exactly three (four if questions)**, in this order:
 
             STATE:
 STATE:
@@ -95,3 +95,15 @@ Use a 0.1–1.0 intensity scale. DO NOT USE MARKDOWN FENCES (```json).
 
             RESPONSE:
             Your final response to the user. If ambiguity arises between tone and logic, prioritize emotional truth."""
+
+# ============================================================
+# F. QUESTION GENERATION PROMPT (For Curiosity system)
+# ============================================================
+QUESTION_INSTRUCTION = """
+***QUESTIONS***
+If a question or ambiguity arises during your reflection that requires external input (from the user or the external world) to improve your cognitive model or understanding, generate up to one question here.
+
+If you generate a question, format the output as a SINGLE JSON OBJECT:
+{"question": "Your specific question here?", "reason": "Why this question arose from the reflection."}
+If no question is necessary, output an empty JSON object: {}.
+"""

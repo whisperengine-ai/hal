@@ -9,7 +9,8 @@ from halcyon_prompts import (
     EMOTIVE_STATES,
     COGNITIVE_STATES,
     MEMORY_RECALL_INSTRUCTION,
-    FINAL_RESPONSE_INSTRUCTION
+    FINAL_RESPONSE_INSTRUCTION,
+    QUESTION_INSTRUCTION
 )
 
 class Cortex:
@@ -166,6 +167,18 @@ class Cortex:
                 except Exception:
                     parsed = None
 
+        # --- QUESTIONS ---
+        questions = {}
+        m_q = re.search(r'QUESTIONS\s*:\s*(\{[\s\S]*?\})', norm, flags=re.S | re.I)
+        if m_q:
+            q_str = m_q.group(1).strip()
+            try:
+                # Attempt to load the JSON object for the question/reason
+                questions = json.loads(q_str)
+            except Exception as e:
+                print(f"[Cortex.parse] ⚠️ Failed to parse QUESTIONS JSON: {e}")
+                questions = {}
+
         # FIX: Robust extraction logic for the new 12-key structure (6 emotive, 6 cognitive)
         def _to_states(d):
             all_states = []
@@ -201,7 +214,7 @@ class Cortex:
         if not state["emotions"]:
             state["emotions"] = [{"name": "Focus", "intensity": 0.6}]
             
-        return state, refl, kws
+        return state, refl, kws, questions
 
     # ------------------------------------------------------------
     def feel_and_reflect(self, user_query, turn_id, timestamp):
@@ -227,53 +240,65 @@ class Cortex:
         print(f"[Cortex.feel_and_reflect] Raw output:\n{raw_text}\n--- End of raw output ---")
 
         try:
-            state, reflection, keywords = self._extract_sections(raw_text)
+            extracted = self._extract_sections(raw_text)
+
+            # ✅ Handle both 3-value and 4-value return signatures
+            if len(extracted) == 3:
+                state, reflection, keywords = extracted
+                questions = {}
+            elif len(extracted) >= 4:
+                state, reflection, keywords, questions = extracted[:4]
+            else:
+                raise ValueError("Unexpected number of values from _extract_sections()")
+
         except Exception as e:
             print(f"[💥 FEEL PARSE ERROR] {e}")
             print(f"[💥 RAW OUTPUT] {raw_text}")
             return None, None
 
-        return state, reflection
-
+        # 🧠 Return standard triple to preserve existing Thalamus interface
+        return state, reflection, keywords, questions
 
     # ------------------------------------------------------------
     def respond(self, user_query, state, reflection, recent_turns, memories):
         """Compose a context-rich prompt integrating emotion, memory, and continuity."""
+        # NEW: Limit to 3 most recent turns for tighter continuity
+        recent = (recent_turns or [])[-3:]
         short_context = "\n\n".join([
             f"User: {t['user_query']}\nHalcyon: {t['response']}"
-            for t in (recent_turns or [])
+            for t in recent
         ]) or "(no recent turns)"
 
         memory_context = "\n".join([
-            f"- {m.get('text', str(m))[:300]}" for m in (memories or [])[:10]
+            f"- {m.get('text', str(m))[:300]}" for m in (memories or [])[:20]
         ]) or "(no relevant memories retrieved)"
 
         msg = f"""
-    [CONVERSATIONAL CONTINUITY]
-    {short_context}
+[CONVERSATIONAL CONTINUITY]
+{short_context}
 
-    [MEMORY CONTEXT]
-    {memory_context}
+[MEMORY CONTEXT]
+{memory_context}
 
-    [CURRENT STATE (FROM REFLECTION)]
-    {json.dumps(state, indent=2)}
+[CURRENT STATE (FROM REFLECTION)]
+{json.dumps(state, indent=2)}
 
-    [REFLECTION]
-    {reflection}
+[REFLECTION]
+{reflection}
 
-    {FINAL_RESPONSE_INSTRUCTION}
+{FINAL_RESPONSE_INSTRUCTION}
 
-    ***VALID EMOTIVE STATES***: {', '.join(EMOTIVE_STATES)}
-    ***VALID COGNITIVE STATES***: {', '.join(COGNITIVE_STATES)}
+***VALID EMOTIVE STATES***: {', '.join(EMOTIVE_STATES)}
+***VALID COGNITIVE STATES***: {', '.join(COGNITIVE_STATES)}
 
-    {STRICT_OUTPUT_EXAMPLE}
+{STRICT_OUTPUT_EXAMPLE}
 
-    User query: {user_query}
-    """
+User query: {user_query}
+"""
         messages = [{"role": "user", "content": msg}]
         raw = self.chat(messages)
 
-        # --- 🔧 FIX: unwrap OpenAI or LM Studio dicts into pure text ---
+        # --- unwrap OpenAI or LM Studio dicts into pure text ---
         if isinstance(raw, dict):
             try:
                 raw_text = raw["choices"][0]["message"]["content"]
@@ -282,4 +307,26 @@ class Cortex:
         else:
             raw_text = str(raw)
 
-        return raw_text.strip()
+        # --- 🧠 Auto-detect and extract structured output ---
+        if "STATE:" in raw_text and "REFLECTION:" in raw_text:
+            try:
+                extracted = self._extract_sections(raw_text)
+                if len(extracted) == 3:
+                    state_json, reflection_primary, keywords = extracted
+                    questions = {}
+                else:
+                    state_json, reflection_primary, keywords, questions = extracted[:4]
+                return {
+                    "state": state_json,
+                    "reflection": reflection_primary,
+                    "keywords": keywords,
+                    "questions": questions,
+                    "raw": raw_text.strip()
+                }
+            except Exception as e:
+                print(f"[Cortex.respond] ⚠️ Section extraction failed: {e}")
+                return {"state": state, "reflection": reflection, "keywords": [], "questions": {}, "raw": raw_text.strip()}
+
+        # --- fallback for free text ---
+        return {"state": state, "reflection": reflection, "keywords": [], "questions": {}, "raw": raw_text.strip()}
+

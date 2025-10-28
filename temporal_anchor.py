@@ -4,20 +4,16 @@ import datetime
 import json
 
 class TemporalAnchor:
-    """
-    Holds the short-term turns, manages recall fusion, and stabilizes the immediate cognitive field.
-    Replaces ContextWindowManager.
-    """
     def __init__(self, hippocampus=None, working_limit=10, anchor_limit=7):
         self.hippocampus = hippocampus
         self.lock = threading.Lock()
         self.working_window = []
-        self.recall_cache = []
         self.anchor_window = []
-        self.working_limit = int(working_limit)
-        self.anchor_limit = int(anchor_limit)
-        self.anchor_context = []
-        self.manual_injections = []
+        self.recall_cache = []
+        self.manual_context = []
+        self.curiosity_queue = []
+        self.working_limit = working_limit
+        self.anchor_limit = anchor_limit
         print(f"[TemporalAnchor] Initialized :: working={working_limit} anchor={anchor_limit}")
 
     def add_turn(self, user_query, reflection, response, state=None, keywords=None, turn_id=None, task_id=None):
@@ -35,95 +31,41 @@ class TemporalAnchor:
             self.working_window.append(turn)
             if len(self.working_window) > self.working_limit:
                 self.working_window.pop(0)
-        print(f"[TemporalAnchor] Turn added :: {len(self.working_window)} turns tracked")
+        print(f"[TemporalAnchor] Turn added :: {len(self.working_window)} tracked")
 
     def get_recent(self, n=None):
         with self.lock:
             return self.working_window[-(n or self.working_limit):]
 
+    def update_anchor(self, user_query, reflection, response, recalled):
+        entry = {
+            "query": user_query,
+            "reflection": reflection[:400],
+            "response": response[:400],
+            "linked": [m.get("timestamp") for m in recalled[:5] if isinstance(m, dict)],
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+        with self.lock:
+            self.anchor_window.append(entry)
+            if len(self.anchor_window) > self.anchor_limit:
+                self.anchor_window.pop(0)
+        print(f"[TemporalAnchor] Anchor updated :: {len(self.anchor_window)} total")
+
     def recall(self, query, n_results=10):
-        """Retrieve recent or relevant memories from Hippocampus."""
+        if not self.hippocampus:
+            print("[TemporalAnchor] ⚠️ No hippocampus linked; skipping recall.")
+            return []
         try:
-            if not hasattr(self, "hippocampus") or self.hippocampus is None:
-                print("[TemporalAnchor] ⚠️ No hippocampus linked; skipping recall.")
-                return []
-
-            if hasattr(self.hippocampus, "recall_with_context"):
-                results = self.hippocampus.recall_with_context(query, n_results=n_results)
-            else:
-                print("[TemporalAnchor] ⚠️ Hippocampus missing recall_with_context; fallback to empty list.")
-                results = []
-
+            results = self.hippocampus.recall_with_context(query, n_results=n_results)
             self.recall_cache = results or []
             print(f"[TemporalAnchor] Recall merged :: {len(self.recall_cache)} entries")
             return self.recall_cache
-
         except Exception as e:
             print(f"[TemporalAnchor] ❌ Recall failed: {e}")
             self.recall_cache = []
             return []
 
-
-    def update_anchor(self, user_query, reflection, response, recalled):
-        """
-        Update the anchor window with a new summarized entry.
-        Links to recently recalled memories for continuity tracking.
-        """
-        try:
-            entry = {
-                "query": user_query,
-                "reflection": (reflection or "")[:400],
-                "response": (response or "")[:400],
-                "linked": [
-                    (m.get("timestamp") if isinstance(m, dict) else None)
-                    for m in (recalled or [])[:5]
-                ],
-                "timestamp": datetime.datetime.now().isoformat()
-            }
-
-            with self.lock:
-                self.anchor_window.append(entry)
-                if len(self.anchor_window) > self.anchor_limit:
-                    self.anchor_window.pop(0)
-
-            print(f"[TemporalAnchor] Anchor updated ({len(self.anchor_window)} entries)")
-
-        except Exception as e:
-            print(f"[TemporalAnchor] ❌ Error updating anchor: {e}")
-
-
-    def build_anchor_frame(self, n_turns=3):
-        """Return a text block of recent user/AI exchanges."""
-        turns = self.get_recent(n_turns)
-        return "\n\n".join([f"User: {t['user_query']}\nHalcyon: {t['response']}" for t in turns])
-
-    def clear_recall(self):
-        with self.lock:
-            self.recall_cache.clear()
-        print("[TemporalAnchor] Recall cache cleared")
-
-    def load(self, path="./memory_journals/anchor.json"):
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                self.anchor_window = json.load(f)
-            print(f"[TemporalAnchor] Anchor loaded ({len(self.anchor_window)})")
-        else:
-            self.anchor_window = []
-            print("[TemporalAnchor] No prior anchor found; fresh start.")
-
-    def save(self, path="./memory_journals/anchor.json"):
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(self.anchor_window, f, indent=2)
-
-    def inject_memories(self, memories: list):
-        """
-        Manually push selected memories into the current conversational anchor.
-        Each item should be a dict with at least {'query': str, 'reflection': str, 'timestamp': str}.
-        """
-        if not hasattr(self, "manual_context"):
-            self.manual_context = []
-
+    def inject_memories(self, memories):
         for mem in memories:
             entry = {
                 "query": mem.get("query", ""),
@@ -132,33 +74,54 @@ class TemporalAnchor:
                 "source": "manual_inject"
             }
             self.manual_context.append(entry)
-            print(f"[TemporalAnchor] Injected manual memory: {entry['timestamp']} — {entry['query'][:50]}...")
+        self.recall_cache += self.manual_context
+        print(f"[TemporalAnchor] Injected {len(memories)} memories manually.")
 
-        # Optionally preload this into the active recall window
-        self.recall_cache = (self.recall_cache or []) + self.manual_context
-        print(f"[TemporalAnchor] Total manual memories injected: {len(self.manual_context)}")
+    def add_curiosity_query(self, turn_id, source_reflection, question, reason, source_keywords):
+        entry = {
+            "turn_id": turn_id,
+            "timestamp": datetime.datetime.now().isoformat(),
+            "question": question,
+            "reason": reason,
+            "reflection": source_reflection[:400],
+            "keywords": source_keywords
+        }
+        with self.lock:
+            self.curiosity_queue.append(entry)
+        print(f"[TemporalAnchor] 🧠 Queued Curiosity: {question[:50]}...")
 
-    def dump_current(self):
-        """Return both active anchor memories and manual injections."""
-        all_items = []
-        if hasattr(self, "anchor_context"):
-            all_items.extend(self.anchor_context)
-        if hasattr(self, "manual_injections"):
-            all_items.extend(self.manual_injections)
+    def get_curiosity_queue(self):
+        with self.lock:
+            return list(self.curiosity_queue)
 
-        entries = []
-        for m in all_items:
-            entries.append({
-                "id": m.get("id", ""),
-                "timestamp": m.get("timestamp", ""),
-                "text": (m.get("text", "")[:120] + "...") if m.get("text") else "",
-                "weight": m.get("weight", 1.0),
-                "pinned": m.get("pinned", False),
-                "dream_promoted": m.get("dream_promoted", False),
-                "emotions": m.get("emotions", []),
-                "keywords": m.get("keywords", []),
-            })
-        print(f"[TemporalAnchor] Dumped {len(entries)} anchor + injected memories.")
-        return entries
+    def clear_curiosity_queue(self, index=None):
+        with self.lock:
+            if index is None:
+                self.curiosity_queue.clear()
+                print("[TemporalAnchor] Cleared all curiosity.")
+            elif 0 <= index < len(self.curiosity_queue):
+                del self.curiosity_queue[index]
+                print(f"[TemporalAnchor] Cleared curiosity index {index}.")
 
-temporal_anchor = TemporalAnchor()
+    def save(self, path="./memory_journals/anchor.json"):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.anchor_window, f, indent=2)
+        print(f"[TemporalAnchor] Anchor saved ({len(self.anchor_window)} entries)")
+
+    def load(self, path="./memory_journals/anchor.json"):
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                self.anchor_window = json.load(f)
+            print(f"[TemporalAnchor] Anchor loaded ({len(self.anchor_window)})")
+        else:
+            print("[TemporalAnchor] No saved anchor found.")
+
+    def build_anchor_frame(self, n_turns=3):
+        turns = self.get_recent(n_turns)
+        return "\n\n".join([f"User: {t['user_query']}\nHalcyon: {t['response']}" for t in turns])
+
+    def clear_recall(self):
+        with self.lock:
+            self.recall_cache.clear()
+        print("[TemporalAnchor] Recall cache cleared")
