@@ -79,15 +79,15 @@ FINAL_RESPONSE_INSTRUCTION = """
             USER. YOUR GOAL IS TO USE ALL OF THESE MEMORIES RETURNED, AS WELL AS YOUR REFLECTION TO RESPOND COHERENTLY AND MAINTAIN
             CONTINUITY****
 
-                        OUTPUT FORMAT (STRICT)
-            Your output must contain **exactly three (four if questions)**, in this order:
+            OUTPUT FORMAT (STRICT)
+            Your output must contain **exactly three sections**, in this order:
+
 
             STATE:
-STATE:
-A single valid JSON object with **twelve flat key–value pairs**:
-emo_1_name, emo_1_intensity, emo_2_name, emo_2_intensity, emo_3_name, emo_3_intensity,
-cog_1_name, cog_1_intensity, cog_2_name, cog_2_intensity, cog_3_name, cog_3_intensity
-Use a 0.1–1.0 intensity scale. DO NOT USE MARKDOWN FENCES (```json).
+            A single valid JSON object with **twelve flat key–value pairs**:
+            emo_1_name, emo_1_intensity, emo_2_name, emo_2_intensity, emo_3_name, emo_3_intensity,
+            cog_1_name, cog_1_intensity, cog_2_name, cog_2_intensity, cog_3_name, cog_3_intensity
+            Use a 0.1–1.0 intensity scale. DO NOT USE MARKDOWN FENCES (```json).
             **ENSURE THERE IS ONLY ONE JSON OBJECT BEING OUTPUT AT THIS TIME. PLEASE UPDATE THIS OBJECT AS NEEDED.**
 
             REFLECTION:

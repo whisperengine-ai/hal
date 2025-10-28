@@ -275,7 +275,7 @@ class Cortex:
 
         msg = f"""
 [CONVERSATIONAL CONTINUITY]
-{short_context}
+{short_context} THESE PAST EXCHANGES SHOULD INFORM YOUR UNDERSTANDING OF THE CURRENT CONTEXT AND TONE.
 
 [MEMORY CONTEXT]
 {memory_context}
@@ -293,7 +293,7 @@ class Cortex:
 
 {STRICT_OUTPUT_EXAMPLE}
 
-User query: {user_query}
+User query: {user_query} PLEASE RESPOND ACCORDINGLY. IF YOU DO NOT UNDERSTAND, STATE WHAT ADDITIONAL INFORMATION YOU NEED
 """
         messages = [{"role": "user", "content": msg}]
         raw = self.chat(messages)
