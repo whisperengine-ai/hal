@@ -1,0 +1,11 @@
+# Core dependencies
+qdrant-client>=1.8.0
+requests>=2.31.0
+python-dotenv>=1.0.0
+
+# Local embeddings (optional - only needed if not using OpenAI embeddings)
+sentence-transformers>=2.5.0
+
+# Optional extras (uncomment if you add these features)
+# transformers>=4.44.0    # if you integrate a RoBERTa emotion classifier
+# torch>=2.3.0            # required by many transformer models (or use onnxruntime)

@@ -46,6 +46,9 @@ class Thalamus:
         timestamp = datetime.datetime.now().isoformat()
         print(f"--- TURN {turn_id} INITIATED ---")
         print(f"[Thalamus] user_query={user_query!r}")
+        
+        # Clear embedding cache at the start of each turn
+        self.cortex.clear_embedding_cache()
 
         try:
             result = self.cortex.feel_and_reflect(user_query, turn_id, timestamp)

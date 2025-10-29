@@ -1,0 +1,38 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# macOS
+.DS_Store
+
+# Virtual environments
+.env
+.venv/
+venv/
+env/
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# Logs and runtime data
+logs/
+runtime_logs/
+memory_journals/
+qdrant_storage/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build artifacts (if any)
+dist/
+build/
+*.egg-info/
