@@ -293,7 +293,8 @@ class Cortex:
 
 {STRICT_OUTPUT_EXAMPLE}
 
-User query: {user_query} PLEASE RESPOND ACCORDINGLY. IF YOU DO NOT UNDERSTAND, STATE WHAT ADDITIONAL INFORMATION YOU NEED
+User query: {user_query}***THIS IS NOT YOUR FIRST OR LAST INTERACTION WITH THE USER. USE ALL OF THE CONTEXT PROVIDED TO RESPOND COHERENTLY AND MAINTAIN CONTINUITY.
+***
 """
         messages = [{"role": "user", "content": msg}]
         raw = self.chat(messages)
