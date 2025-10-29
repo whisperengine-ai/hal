@@ -9,6 +9,7 @@ import uuid
 import datetime
 
 # Import your core modules
+import config  # Load environment from .env early
 from cortex import Cortex
 from hippocampus import Hippocampus
 from temporal_anchor import TemporalAnchor
